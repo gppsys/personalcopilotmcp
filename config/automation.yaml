@@ -1,0 +1,74 @@
+automation_jobs:
+- job_name: email_sync
+  job_type: email_sync
+  enabled: true
+  schedule: '*/5 * * * *'
+  settings:
+    max_emails_per_sync: 100
+    sync_sent: true
+    sync_drafts: false
+- job_name: calendar_sync
+  job_type: calendar_sync
+  enabled: true
+  schedule: '*/15 * * * *'
+  settings:
+    days_ahead: 14
+    days_behind: 7
+- job_name: task_sync
+  job_type: task_sync
+  enabled: true
+  schedule: '*/30 * * * *'
+  settings:
+    include_completed: false
+    sync_comments: true
+- job_name: news_sync
+  job_type: news_sync
+  enabled: true
+  schedule: 0 * * * *
+  settings:
+    max_articles: 50
+    categories:
+    - business
+    - technology
+    - finance
+- job_name: daily_briefing
+  job_type: daily_briefing
+  enabled: true
+  schedule: 0 7 * * *
+  settings:
+    send_email: true
+    to_email: null  # null = send to self
+- job_name: follow_up_detection
+  job_type: follow_up_detection
+  enabled: true
+  schedule: 0 9,14 * * *
+  settings:
+    days_back: 7
+    min_wait_days: 2
+- job_name: transcript_scan
+  job_type: transcript_scan
+  enabled: true
+  schedule: 0 10,16 * * *
+  settings:
+    days_back: 7
+    use_ai: true
+- job_name: commitment_detection
+  job_type: commitment_detection
+  enabled: true
+  schedule: 0 9,15 * * *
+  settings:
+    days_back: 7
+    use_ai: true
+- job_name: relationship_scan
+  job_type: relationship_scan
+  enabled: true
+  schedule: 0 8,18 * * *
+  settings:
+    days_back: 7
+- job_name: delegation_detection
+  job_type: delegation_detection
+  enabled: true
+  schedule: 0 9,15 * * *
+  settings:
+    days_back: 7
+    use_ai: true

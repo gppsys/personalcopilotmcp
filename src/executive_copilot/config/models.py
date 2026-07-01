@@ -1,0 +1,355 @@
+"""Configuration models using Pydantic Settings."""
+
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Environment(StrEnum):
+    """Application environment."""
+
+    DEVELOPMENT = "development"
+    STAGING = "staging"
+    PRODUCTION = "production"
+
+
+class AIProvider(StrEnum):
+    """Supported AI model providers."""
+
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    AZURE_OPENAI = "azure_openai"
+    GOOGLE = "google"
+    LOCAL = "local"
+
+
+class ReasoningEffort(StrEnum):
+    """OpenAI Responses API reasoning effort levels."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class TextVerbosity(StrEnum):
+    """OpenAI Responses API text output verbosity."""
+
+    AUTO = "auto"
+    CONCISE = "concise"
+    VERBOSE = "verbose"
+
+
+class DatabaseConfig(BaseModel):
+    """Database configuration."""
+
+    driver: str = Field(default="sqlite+aiosqlite", description="Database driver")
+    host: str = Field(default="localhost", description="Database host")
+    port: int = Field(default=5432, description="Database port")
+    name: str = Field(default="executive_copilot.db", description="Database name")
+    user: str | None = Field(default=None, description="Database user")
+    password: SecretStr | None = Field(default=None, description="Database password")
+    pool_size: int = Field(default=5, ge=1, description="Connection pool size")
+    max_overflow: int = Field(default=10, ge=0, description="Max overflow connections")
+    echo: bool = Field(default=False, description="Echo SQL statements")
+
+    @property
+    def url(self) -> str:
+        """Build database URL."""
+        if self.driver.startswith("sqlite"):
+            return f"{self.driver}:///{self.name}"
+        password = self.password.get_secret_value() if self.password else ""
+        return f"{self.driver}://{self.user}:{password}@{self.host}:{self.port}/{self.name}"
+
+
+class LoggingConfig(BaseModel):
+    """Logging configuration."""
+
+    level: str = Field(default="INFO", description="Log level")
+    json_format: bool = Field(default=False, description="Use JSON format")
+    add_timestamps: bool = Field(default=True, description="Add timestamps")
+
+
+class OAuthConfig(BaseModel):
+    """OAuth provider configuration."""
+
+    provider_name: str = Field(description="Provider name")
+    client_id: SecretStr = Field(description="OAuth client ID")
+    client_secret: SecretStr = Field(description="OAuth client secret")
+    redirect_uri: str = Field(description="OAuth redirect URI")
+    scopes: list[str] = Field(default_factory=list, description="OAuth scopes")
+    auth_url: str | None = Field(default=None, description="Authorization URL")
+    token_url: str | None = Field(default=None, description="Token URL")
+
+
+class ProviderConfig(BaseModel):
+    """Provider instance configuration."""
+
+    provider_type: str = Field(description="Type of provider (email, calendar, etc.)")
+    provider_name: str = Field(description="Provider implementation name")
+    enabled: bool = Field(default=True, description="Whether provider is enabled")
+    account_id: str | None = Field(default=None, description="Account identifier")
+    oauth_config_name: str | None = Field(default=None, description="Reference to OAuth config")
+    settings: dict[str, Any] = Field(default_factory=dict, description="Provider-specific settings")
+
+
+class ProviderAccountMapping(BaseModel):
+    """Maps a provider type to a specific account for an organization."""
+
+    provider_type: str = Field(description="Type of provider (email, calendar, task)")
+    provider_name: str = Field(description="Provider implementation (outlook, gmail, google)")
+    account_id: str = Field(description="Account identifier (email address or workspace)")
+
+
+class OrganizationConfig(BaseModel):
+    """Organization configuration for context matching.
+
+    Each organization can specify which provider accounts to use.
+    For example, a primary workspace might use user@primary.com for email
+    while a secondary workspace uses user@secondary.com.
+    """
+
+    name: str = Field(description="Organization name")
+    short_name: str | None = Field(default=None, description="Short name")
+    organization_type: str = Field(description="Type (employer, client, etc.)")
+    domains: list[str] = Field(default_factory=list, description="Email domains")
+    context_sources: list[str] = Field(
+        default_factory=list,
+        description="Information sources to consult",
+    )
+    provider_accounts: list[ProviderAccountMapping] = Field(
+        default_factory=list,
+        description="Provider accounts to use for this organization",
+    )
+    default_project_id: str | None = Field(default=None, description="Default project ID")
+    importance: int = Field(default=5, ge=1, le=10, description="Importance level")
+    tags: list[str] = Field(default_factory=list, description="Tags")
+
+    def get_account_for_provider(
+        self, provider_type: str, provider_name: str | None = None
+    ) -> str | None:
+        """Get the account ID for a specific provider type.
+
+        Args:
+            provider_type: Type of provider (email, calendar, etc.)
+            provider_name: Optional specific provider (outlook, gmail)
+
+        Returns:
+            Account ID if found, None otherwise
+        """
+        for mapping in self.provider_accounts:
+            if mapping.provider_type == provider_type:
+                if provider_name is None or mapping.provider_name == provider_name:
+                    return mapping.account_id
+        return None
+
+
+class ContextRuleConfig(BaseModel):
+    """Context engine rule configuration."""
+
+    name: str = Field(description="Rule name")
+    description: str | None = Field(default=None, description="Rule description")
+    priority: int = Field(default=0, description="Rule priority (higher = first)")
+    conditions: dict[str, Any] = Field(description="Conditions to match")
+    sources: list[str] = Field(description="Sources to consult when matched")
+    enabled: bool = Field(default=True, description="Whether rule is enabled")
+
+
+class NewsSourceConfig(BaseModel):
+    """News source configuration."""
+
+    name: str = Field(description="Source name")
+    source_type: str = Field(description="Source type (rss, api, etc.)")
+    url: str = Field(description="Source URL")
+    enabled: bool = Field(default=True, description="Whether source is enabled")
+    category: str | None = Field(default=None, description="News category")
+    refresh_minutes: int = Field(default=60, description="Refresh interval")
+    filters: dict[str, Any] = Field(default_factory=dict, description="Content filters")
+
+
+class AutomationConfig(BaseModel):
+    """Automation job configuration."""
+
+    job_name: str = Field(description="Job name")
+    job_type: str = Field(description="Type of job")
+    enabled: bool = Field(default=True, description="Whether job is enabled")
+    schedule: str = Field(description="Cron schedule expression")
+    settings: dict[str, Any] = Field(default_factory=dict, description="Job-specific settings")
+
+
+class ModelRoutingConfig(BaseModel):
+    """AI model routing configuration."""
+
+    default_model: str = Field(default="gpt-5.4-mini", description="Default model")
+    routing_rules: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Rules for model selection",
+    )
+    fallback_model: str | None = Field(default="gpt-5.4-nano", description="Fallback model")
+    max_tokens: int = Field(default=4096, description="Default max tokens")
+    temperature: float = Field(default=0.7, ge=0, le=2, description="Default temperature")
+
+
+class AIConfig(BaseModel):
+    """Server-side AI configuration.
+
+    This config is for background intelligence performed by Executive Copilot
+    itself. MCP clients still choose their own assistant model.
+
+    Supports multiple providers: OpenAI, Anthropic, Azure OpenAI, Google, and local models.
+    """
+
+    provider: AIProvider = Field(default=AIProvider.OPENAI, description="AI provider")
+    default_model: str = Field(default="gpt-4o-mini", description="Default model")
+    premium_model: str = Field(default="gpt-4o", description="High-capability model")
+    fallback_model: str | None = Field(default=None, description="Fallback model")
+    embedding_model: str = Field(default="text-embedding-3-small", description="Embedding model")
+    max_output_tokens: int = Field(default=4096, ge=1, description="Default output token limit")
+    temperature: float = Field(default=0.7, ge=0, le=2, description="Default temperature")
+    timeout_seconds: float = Field(default=60.0, gt=0, description="Request timeout")
+
+    # OpenAI Responses API options
+    reasoning_effort: ReasoningEffort = Field(
+        default=ReasoningEffort.MEDIUM, description="Reasoning effort for OpenAI Responses API"
+    )
+    text_verbosity: TextVerbosity = Field(
+        default=TextVerbosity.AUTO, description="Text output verbosity"
+    )
+    store: bool = Field(default=False, description="Whether to store responses (OpenAI)")
+
+    # Azure-specific settings
+    azure_endpoint: str | None = Field(default=None, description="Azure OpenAI endpoint URL")
+    azure_deployment: str | None = Field(default=None, description="Azure deployment name")
+    azure_api_version: str = Field(default="2024-02-15-preview", description="Azure API version")
+
+    # Local model settings (Ollama, LM Studio, etc.)
+    local_base_url: str | None = Field(default=None, description="Local model API base URL")
+
+    # Credential reference
+    credential_provider_type: str = Field(
+        default="ai",
+        description="Credential store provider type",
+    )
+    credential_provider_name: str | None = Field(
+        default=None,
+        description="Credential store provider name (defaults to provider value)",
+    )
+
+    @property
+    def effective_credential_name(self) -> str:
+        """Get the effective credential provider name."""
+        return self.credential_provider_name or self.provider.value
+
+
+class MCPConfig(BaseModel):
+    """MCP server configuration."""
+
+    host: str = Field(default="localhost", description="Server host")
+    port: int = Field(default=8000, description="Server port")
+    transport: str = Field(default="stdio", description="Transport type (stdio, sse)")
+    name: str = Field(default="executive-copilot", description="Server name")
+    version: str = Field(default="0.1.0", description="Server version")
+
+
+class AppConfig(BaseSettings):
+    """Root application configuration.
+
+    Combines all configuration sections and supports loading
+    from environment variables and config files.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="COPILOT_",
+        env_nested_delimiter="__",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Environment
+    environment: Environment = Field(default=Environment.DEVELOPMENT)
+    debug: bool = Field(default=False)
+    config_dir: Path = Field(default=Path("config"))
+
+    # User configuration
+    user_email: str | None = Field(default=None, description="User's email address")
+
+    # Core configuration
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
+    ai: AIConfig = Field(default_factory=AIConfig)
+    model_routing: ModelRoutingConfig = Field(default_factory=ModelRoutingConfig)
+
+    # OAuth configurations (keyed by name)
+    oauth: dict[str, OAuthConfig] = Field(default_factory=dict)
+
+    # Provider configurations
+    providers: list[ProviderConfig] = Field(default_factory=list)
+
+    # Organization configurations
+    organizations: list[OrganizationConfig] = Field(default_factory=list)
+
+    # Context rules
+    context_rules: list[ContextRuleConfig] = Field(default_factory=list)
+
+    # News sources
+    news_sources: list[NewsSourceConfig] = Field(default_factory=list)
+
+    # Automation jobs
+    automation_jobs: list[AutomationConfig] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_model_routing(cls, data: Any) -> Any:
+        """Use legacy model_routing values when ai is not configured."""
+        if not isinstance(data, dict) or "ai" in data:
+            return data
+
+        model_routing_value = data.get("model_routing")
+        if isinstance(model_routing_value, BaseModel):
+            model_routing = model_routing_value.model_dump()
+        elif isinstance(model_routing_value, dict):
+            model_routing = model_routing_value
+        else:
+            return data
+
+        ai: dict[str, Any] = {}
+        if "default_model" in model_routing:
+            ai["default_model"] = model_routing["default_model"]
+        if "fallback_model" in model_routing:
+            ai["fallback_model"] = model_routing["fallback_model"]
+        if "max_tokens" in model_routing:
+            ai["max_output_tokens"] = model_routing["max_tokens"]
+        if "temperature" in model_routing:
+            ai["temperature"] = model_routing["temperature"]
+
+        if ai:
+            data = data.copy()
+            data["ai"] = ai
+        return data
+
+    def get_provider_config(self, provider_type: str, provider_name: str) -> ProviderConfig | None:
+        """Get configuration for a specific provider."""
+        for provider in self.providers:
+            if provider.provider_type == provider_type and provider.provider_name == provider_name:
+                return provider
+        return None
+
+    def get_organization_by_domain(self, domain: str) -> OrganizationConfig | None:
+        """Find organization by email domain."""
+        domain_lower = domain.lower()
+        for org in self.organizations:
+            if any(d.lower() == domain_lower for d in org.domains):
+                return org
+        return None
+
+    def get_enabled_providers(self, provider_type: str | None = None) -> list[ProviderConfig]:
+        """Get all enabled providers, optionally filtered by type."""
+        return [
+            p
+            for p in self.providers
+            if p.enabled and (provider_type is None or p.provider_type == provider_type)
+        ]

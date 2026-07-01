@@ -1,0 +1,53 @@
+# Executive Copilot Configuration
+# This is the main configuration file. Environment-specific overrides
+# can be placed in config.{environment}.yaml files.
+
+environment: development
+debug: true
+
+# Database configuration
+database:
+  driver: "sqlite+aiosqlite"
+  name: "executive_copilot.db"
+  echo: false
+
+# Logging configuration
+logging:
+  level: "INFO"
+  json_format: false
+  add_timestamps: true
+
+# MCP server configuration
+mcp:
+  name: "executive-copilot"
+  version: "0.1.0"
+  transport: "stdio"
+
+# Server-side AI configuration
+# MCP clients choose their own assistant model. These settings only apply to
+# background intelligence performed by Executive Copilot itself.
+#
+# Supported providers: openai, anthropic, azure_openai, google, local
+ai:
+  provider: "openai"  # Options: openai, anthropic, azure_openai, google, local
+  default_model: "gpt-4o-mini"
+  premium_model: "gpt-4o"
+  embedding_model: "text-embedding-3-small"
+  max_output_tokens: 4096
+  temperature: 0.7
+  timeout_seconds: 60.0
+
+  # Azure OpenAI settings (only used when provider: azure_openai)
+  # azure_endpoint: "https://your-resource.openai.azure.com"
+  # azure_deployment: "gpt-4o"
+  # azure_api_version: "2024-02-15-preview"
+
+  # Local model settings (only used when provider: local)
+  # local_base_url: "http://localhost:11434"  # Ollama default
+
+# Legacy model routing config (deprecated, use ai section above)
+model_routing:
+  default_model: "gpt-4o-mini"
+  fallback_model: null
+  max_tokens: 4096
+  temperature: 0.7

@@ -1,0 +1,52 @@
+organizations:
+- name: Your Company
+  short_name: CO
+  organization_type: employer
+  domains:
+  - yourcompany.com
+  context_sources:
+  - asana
+  - calendar
+  - documentation
+  - gmail
+  - memory
+  - previous_threads
+  - slack
+  - conversations
+  provider_accounts:
+  - provider_type: email
+    provider_name: gmail
+    account_id: you@yourcompany.com
+  - provider_type: calendar
+    provider_name: google
+    account_id: you@yourcompany.com
+  - provider_type: task
+    provider_name: asana
+    account_id: you@yourcompany.com
+  importance: 10
+  tags:
+  - employer
+- name: Personal
+  short_name: PERS
+  organization_type: personal
+  domains:
+  - gmail.com
+  - outlook.com
+  - hotmail.com
+  - live.com
+  context_sources:
+  - calendar
+  - memory
+  - previous_threads
+  - onedrive
+  provider_accounts:
+  - provider_type: email
+    provider_name: gmail
+    account_id: your.personal@gmail.com
+  - provider_type: calendar
+    provider_name: google
+    account_id: your.personal@gmail.com
+  importance: 7
+  tags:
+  - personal
+  - family

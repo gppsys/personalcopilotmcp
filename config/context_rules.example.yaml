@@ -1,0 +1,40 @@
+context_rules:
+- name: work_technical
+  description: Technical emails from work team
+  priority: 100
+  conditions:
+    domain: yourcompany.com
+    content_contains: technical
+  sources:
+  - asana
+  - documentation
+  - memory
+  - previous_threads
+- name: work_general
+  description: General emails from work
+  priority: 50
+  conditions:
+    domain: yourcompany.com
+  sources:
+  - asana
+  - memory
+  - previous_threads
+- name: school_emails
+  description: Emails from kids' school
+  priority: 60
+  conditions:
+    domain: school.edu
+  sources:
+  - calendar
+  - previous_threads
+- name: meeting_context
+  description: Context for meeting preparation
+  priority: 70
+  conditions:
+    input_type: meeting
+  sources:
+  - calendar
+  - people
+  - previous_threads
+  - tasks
+  - memory
