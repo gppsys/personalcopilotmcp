@@ -1,0 +1,54 @@
+# Email Forward Rules
+# Copy to email_forward_rules.yaml (gitignored) and customize.
+#
+# Rules run against incoming email during the EmailForwardJob (see automation.yaml).
+# Supported condition fields (all optional, combined with AND):
+#   from_email:       exact sender address match (case-insensitive)
+#   from_domain:      sender domain match (e.g. "billing.vendor.com")
+#   subject_contains: case-insensitive substring match on subject
+#   subject_regex:    case-insensitive regex match on subject
+# Supported action fields:
+#   forward_to:       recipient address (required)
+#   cc:               optional CC address
+#   add_message:      text prepended to the forwarded email
+#   mark_as_read:     mark the original as read after forwarding (default false)
+#   add_label:        label/folder applied to the original (e.g. "forwarded/accounting")
+
+email_forward_rules:
+  - name: vendor_invoices
+    description: Forward vendor invoices to accounting
+    enabled: true
+    conditions:
+      from_email: "billing@vendor.com"
+    action:
+      forward_to: "accounting@yourcompany.com"
+      add_message: |
+        Hi accounting team,
+
+        Forwarding this invoice for processing.
+
+        Thanks
+      mark_as_read: true
+      add_label: "forwarded/accounting"
+
+  - name: aws_invoices
+    description: Forward AWS billing notifications
+    enabled: false
+    conditions:
+      from_email: "no-reply@amazonaws.com"
+      subject_contains: "invoice"
+    action:
+      forward_to: "accounting@yourcompany.com"
+      add_message: "AWS invoice for processing."
+      mark_as_read: true
+
+  - name: domain_invoices
+    description: Forward all invoices from a vendor domain, CC a manager
+    enabled: false
+    conditions:
+      from_domain: "billing.vendor.com"
+      subject_regex: "invoice|factura"
+    action:
+      forward_to: "accounting@yourcompany.com"
+      cc: "manager@yourcompany.com"
+      add_message: "Invoice from vendor for review."

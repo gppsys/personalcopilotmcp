@@ -33,6 +33,11 @@ uv sync
 cp config/organizations.example.yaml config/organizations.yaml
 # Edit config/organizations.yaml with your accounts
 
+# Optional: local overrides and extra rules (all gitignored)
+cp config/config.local.example.yaml config/config.local.yaml
+cp config/context_rules.example.yaml config/context_rules.yaml
+cp config/email_forward_rules.example.yaml config/email_forward_rules.yaml
+
 # Initialize database
 uv run copilot db init
 
