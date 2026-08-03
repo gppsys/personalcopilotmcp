@@ -1,3 +1,0 @@
-uv run copilot serve --port 8090    # admin + jobs de automatización (recomendado)
-uv run copilot admin --port 8090    # solo el panel admin
-uv run copilot stop --port 8090     # detenerlo (debe coincidir el puerto)
