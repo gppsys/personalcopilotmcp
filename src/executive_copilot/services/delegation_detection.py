@@ -37,6 +37,16 @@ For each delegation found, extract:
 - original_text: The exact quote requesting the action
 - priority: low, medium, high, or urgent (based on language urgency)
 
+IMPORTANT rules:
+- IGNORE quoted reply text (lines starting with ">") and forwarded content:
+  only analyze the newly written message.
+- IGNORE boilerplate, signatures, and security disclaimers (e.g. "If you
+  receive an email that seems fraudulent, please check with...") — generic
+  advice is not a delegation.
+- IGNORE conditional or hypothetical phrasing.
+- Only extract requests that are concrete, actionable, and addressed to a
+  specific person or team.
+
 Return a JSON array. If no delegations found, return [].
 
 Only include OUTGOING requests (sender asking others), not incoming requests TO the sender.
@@ -353,8 +363,20 @@ class DelegationDetectionService:
         ]
 
         for line in lines:
-            line_lower = line.lower().strip()
+            stripped = line.strip()
+            line_lower = stripped.lower()
             if not line_lower or len(line_lower) < 15:
+                continue
+
+            # Skip quoted reply text: those lines were written by someone
+            # else (or by us in a past email) and must not be re-detected.
+            if stripped.startswith(">") or stripped.startswith("|"):
+                continue
+
+            # Skip conditional phrasing and boilerplate warnings, e.g.
+            # "If you receive an email that seems fraudulent, please check
+            # with ..." — hypotheticals are not delegations.
+            if line_lower.startswith(("if ", "in case ", "should you ", "en caso ", "si ")):
                 continue
 
             for pattern in delegation_patterns:

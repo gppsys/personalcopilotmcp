@@ -37,9 +37,9 @@ class ReasoningEffort(StrEnum):
 class TextVerbosity(StrEnum):
     """OpenAI Responses API text output verbosity."""
 
-    AUTO = "auto"
-    CONCISE = "concise"
-    VERBOSE = "verbose"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
 
 
 class DatabaseConfig(BaseModel):
@@ -215,7 +215,7 @@ class AIConfig(BaseModel):
         default=ReasoningEffort.MEDIUM, description="Reasoning effort for OpenAI Responses API"
     )
     text_verbosity: TextVerbosity = Field(
-        default=TextVerbosity.AUTO, description="Text output verbosity"
+        default=TextVerbosity.MEDIUM, description="Text output verbosity"
     )
     store: bool = Field(default=False, description="Whether to store responses (OpenAI)")
 

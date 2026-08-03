@@ -43,6 +43,14 @@ For each commitment, extract:
 - due_date: When it's due (YYYY-MM-DD format, if mentioned)
 - original_text: The exact quote
 
+IMPORTANT rules:
+- IGNORE quoted reply text (lines starting with ">") and forwarded content:
+  only analyze the newly written message.
+- IGNORE conditional or hypothetical statements ("only if X, I will...",
+  "if that doesn't work, I'll call in") — they are not firm commitments.
+- IGNORE boilerplate, signatures, and security disclaimers.
+- Only extract commitments that are firm, actionable, and owned by a person.
+
 Return a JSON array. If no commitments found, return [].
 
 Example output:
@@ -401,16 +409,30 @@ class CommitmentDetectionService:
         ]
 
         for line in lines:
-            line_lower = line.lower().strip()
+            stripped = line.strip()
+            line_lower = stripped.lower()
             if not line_lower or len(line_lower) < 10:
+                continue
+
+            # Skip quoted reply text — those lines belong to earlier emails
+            # (possibly written by someone else) and produce false positives
+            # like detecting a quoted bullet as a fresh commitment.
+            if stripped.startswith(">") or stripped.startswith("|"):
+                continue
+
+            # Skip conditional/hypothetical phrasing: "Only if the above are
+            # not feasible - I will call in" is not a firm commitment.
+            if line_lower.startswith(
+                ("if ", "only if ", "in case ", "unless ", "should ", "si ", "solo si ")
+            ):
                 continue
 
             for keyword in i_promised_keywords:
                 if keyword in line_lower:
                     commitments.append({
                         "direction": "i_promised",
-                        "title": line.strip()[:100],
-                        "original_text": line.strip(),
+                        "title": stripped[:100],
+                        "original_text": stripped,
                     })
                     break
 

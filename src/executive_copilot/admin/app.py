@@ -88,6 +88,24 @@ class AutomationJobInput(BaseModel):
     settings: dict[str, Any] = Field(default_factory=dict)
 
 
+class DashboardDoneInput(BaseModel):
+    key: str
+    done: bool = True
+
+
+class TechTicketInput(BaseModel):
+    title: str
+    notes: str | None = None
+    assignee_id: str | None = None
+    project_id: str | None = None
+    due_on: str | None = None
+
+
+class TechTicketsRequest(BaseModel):
+    tickets: list[TechTicketInput] = Field(default_factory=list)
+    account: str | None = None
+
+
 def create_admin_app(config_dir: Path | None = None, shutdown_event: "asyncio.Event | None" = None) -> FastAPI:
     """Create the admin panel FastAPI application."""
     import os
@@ -132,12 +150,157 @@ def create_admin_app(config_dir: Path | None = None, shutdown_event: "asyncio.Ev
         """Health check endpoint."""
         return {"status": "healthy", "service": "executive-copilot-admin"}
 
+    @app.get("/api/dashboard")
+    async def get_dashboard(refresh: bool = False) -> dict[str, Any]:
+        """Get dashboard data including daily briefing.
+
+        Serves the cached briefing instantly (written whenever a briefing is
+        generated — by the daily job or a manual refresh). Pass refresh=true
+        to regenerate live from all providers.
+        """
+        from executive_copilot.config import load_config
+        from executive_copilot.database import DatabaseManager
+        from executive_copilot.services.briefing import (
+            BriefingService,
+            load_briefing_cache,
+        )
+        from executive_copilot.services.dashboard_state import apply_done_marks
+
+        if not refresh:
+            cached = load_briefing_cache()
+            if cached is not None:
+                return {
+                    "status": "ok",
+                    "briefing": apply_done_marks(cached),
+                    "cached": True,
+                }
+
+        try:
+            app_config = load_config(config_dir)
+            db_manager = DatabaseManager(app_config.database)
+
+            service = BriefingService(
+                config=app_config,
+                credential_manager=credential_manager,
+                db_manager=db_manager,
+            )
+
+            briefing = await service.generate_briefing()
+            await db_manager.close()
+
+            return {
+                "status": "ok",
+                "briefing": apply_done_marks(briefing),
+                "cached": False,
+            }
+        except Exception as e:
+            logger.error("Failed to generate dashboard data", error=str(e))
+            return {
+                "status": "error",
+                "error": str(e),
+                "briefing": None,
+            }
+
+    @app.post("/api/dashboard/done")
+    async def set_dashboard_item_done(payload: DashboardDoneInput) -> dict[str, Any]:
+        """Mark or unmark a dashboard item as done (handled outside email/Asana)."""
+        from executive_copilot.services.dashboard_state import set_item_done
+
+        set_item_done(payload.key, payload.done)
+        return {"status": "ok", "key": payload.key, "done": payload.done}
+
+    @app.get("/api/activity")
+    async def get_activity() -> dict[str, Any]:
+        """Get MCP activity log."""
+        from executive_copilot.mcp.activity import get_tracker
+
+        tracker = get_tracker()
+        return {
+            "activities": tracker.get_recent_activities(limit=50),
+            "stats": tracker.get_stats(),
+        }
+
+    @app.post("/api/activity/clear")
+    async def clear_activity() -> dict[str, str]:
+        """Clear activity log."""
+        from executive_copilot.mcp.activity import get_tracker
+
+        tracker = get_tracker()
+        tracker.clear()
+        return {"status": "ok"}
+
     # --- HTML Routes ---
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> str:
         """Serve the admin panel."""
         return get_admin_html()
+
+    @app.get("/tech", response_class=HTMLResponse)
+    async def tech_dashboard() -> HTMLResponse:
+        """Serve the tech dashboard (CTO view) with persisted week history injected."""
+        from executive_copilot.services import week_history
+
+        # Never cache the shell so the browser always gets the latest dashboard.
+        return HTMLResponse(
+            week_history.render_dashboard_html(),
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
+
+    # --- Tech dashboard data (live from Asana, server-side) ---
+
+    @app.get("/api/tech/data")
+    async def tech_data(account: str | None = None) -> dict[str, Any]:
+        """Clients, active roadmap and recent wins — team-wide, live from Asana."""
+        from executive_copilot.services import tech_dashboard
+
+        acc = account or tech_dashboard.DEFAULT_ACCOUNT_ID
+        try:
+            data = await tech_dashboard.get_dashboard_data(credential_manager, acc)
+            return {"status": "ok", **data}
+        except Exception as e:
+            logger.error("tech_data failed", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    @app.get("/api/tech/team")
+    async def tech_team(account: str | None = None) -> dict[str, Any]:
+        """Asana workspace members for the ticket-assignee picker."""
+        from executive_copilot.services import tech_dashboard
+
+        acc = account or tech_dashboard.DEFAULT_ACCOUNT_ID
+        try:
+            members = await tech_dashboard.get_team_members(credential_manager, acc)
+            return {"status": "ok", "members": members}
+        except Exception as e:
+            logger.error("tech_team failed", error=str(e))
+            return {"status": "error", "error": str(e), "members": []}
+
+    @app.get("/api/tech/projects")
+    async def tech_projects(account: str | None = None) -> dict[str, Any]:
+        """Asana projects for the ticket-project picker."""
+        from executive_copilot.services import tech_dashboard
+
+        acc = account or tech_dashboard.DEFAULT_ACCOUNT_ID
+        try:
+            projects = await tech_dashboard.list_projects(credential_manager, acc)
+            return {"status": "ok", "projects": projects}
+        except Exception as e:
+            logger.error("tech_projects failed", error=str(e))
+            return {"status": "error", "error": str(e), "projects": []}
+
+    @app.post("/api/tech/tickets")
+    async def tech_create_tickets(payload: TechTicketsRequest) -> dict[str, Any]:
+        """Turn selected review agreements into Asana tickets for the team."""
+        from executive_copilot.services import tech_dashboard
+
+        acc = payload.account or tech_dashboard.DEFAULT_ACCOUNT_ID
+        items = [t.model_dump() for t in payload.tickets]
+        try:
+            result = await tech_dashboard.create_tickets(credential_manager, items, acc)
+            return {"status": "ok", **result}
+        except Exception as e:
+            logger.error("tech_create_tickets failed", error=str(e))
+            return {"status": "error", "error": str(e)}
 
     # --- OAuth Routes ---
 
@@ -327,12 +490,13 @@ def create_admin_app(config_dir: Path | None = None, shutdown_event: "asyncio.Ev
                 seen.add(key)
 
                 has_access_token = cred.get("has_access_token", False)
+                has_refresh_token = cred.get("has_refresh_token", False)
                 accounts.append({
                     "provider_type": cred["provider_type"],
                     "provider_name": cred["provider_name"],
                     "account_id": cred["account_id"],
                     "account_label": cred.get("account_label", cred["account_id"]),
-                    "authorized": has_access_token,
+                    "authorized": has_access_token or has_refresh_token,
                     "has_client_id": cred.get("has_client_id", False),
                     "has_client_secret": cred.get("has_client_secret", False),
                     "auth_url": f"/auth/{'google' if cred['provider_name'] in ['gmail', 'google'] else 'microsoft'}/start?account={cred['account_id']}",
@@ -811,6 +975,11 @@ def create_admin_app(config_dir: Path | None = None, shutdown_event: "asyncio.Ev
             {"id": "news_sync", "name": "News Synchronization"},
             {"id": "daily_briefing", "name": "Daily Briefing"},
             {"id": "follow_up_detection", "name": "Follow-up Detection"},
+            {"id": "transcript_scan", "name": "Transcript Scanner"},
+            {"id": "commitment_detection", "name": "Commitment Detection"},
+            {"id": "relationship_scan", "name": "Relationship Scanner"},
+            {"id": "delegation_detection", "name": "Delegation Detection"},
+            {"id": "email_forward", "name": "Email Auto-Forward"},
         ]
 
     @app.get("/api/options/provider-types")
@@ -884,6 +1053,65 @@ def get_admin_html() -> str:
     <style>
         [x-cloak] { display: none !important; }
         .tab-active { border-bottom: 2px solid #3b82f6; color: #3b82f6; }
+        @keyframes pulse-slow { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+        @keyframes slide-in { from { transform: translateY(10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        @keyframes count-up { from { transform: scale(0.8); } to { transform: scale(1); } }
+        @keyframes float { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-10px); } }
+        @keyframes glow { 0%, 100% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.3); } 50% { box-shadow: 0 0 40px rgba(99, 102, 241, 0.6), 0 0 60px rgba(139, 92, 246, 0.4); } }
+        @keyframes orbit { from { transform: rotate(0deg) translateX(60px) rotate(0deg); } to { transform: rotate(360deg) translateX(60px) rotate(-360deg); } }
+        @keyframes orbit-reverse { from { transform: rotate(360deg) translateX(45px) rotate(-360deg); } to { transform: rotate(0deg) translateX(45px) rotate(0deg); } }
+        @keyframes pulse-ring { 0% { transform: scale(0.8); opacity: 1; } 100% { transform: scale(1.4); opacity: 0; } }
+        @keyframes typing { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+        @keyframes wave { 0%, 100% { transform: scaleY(0.5); } 50% { transform: scaleY(1); } }
+        @keyframes brain-pulse { 0%, 100% { transform: scale(1); filter: brightness(1); } 50% { transform: scale(1.05); filter: brightness(1.2); } }
+        @keyframes data-flow { 0% { stroke-dashoffset: 100; opacity: 0; } 50% { opacity: 1; } 100% { stroke-dashoffset: 0; opacity: 0; } }
+        .animate-pulse-slow { animation: pulse-slow 2s ease-in-out infinite; }
+        .animate-slide-in { animation: slide-in 0.3s ease-out forwards; }
+        .animate-count { animation: count-up 0.4s ease-out; }
+        .animate-float { animation: float 3s ease-in-out infinite; }
+        .animate-glow { animation: glow 2s ease-in-out infinite; }
+        .animate-orbit { animation: orbit 8s linear infinite; }
+        .animate-orbit-reverse { animation: orbit-reverse 6s linear infinite; }
+        .animate-brain { animation: brain-pulse 2s ease-in-out infinite; }
+        .stat-card { transition: all 0.3s ease; }
+        .stat-card:hover { transform: translateY(-2px); box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1); }
+        .gradient-blue { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .gradient-green { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); }
+        .gradient-orange { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
+        .gradient-red { background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%); }
+        .gradient-purple { background: linear-gradient(135deg, #5f2c82 0%, #49a09d 100%); }
+        .gradient-cyan { background: linear-gradient(135deg, #00c6fb 0%, #005bea 100%); }
+        .glass { background: rgba(255,255,255,0.9); backdrop-filter: blur(10px); }
+        .progress-ring { transform: rotate(-90deg); }
+        .progress-ring circle { transition: stroke-dashoffset 0.5s ease-in-out; }
+        .ai-orb { background: radial-gradient(circle at 30% 30%, #818cf8, #6366f1, #4f46e5, #4338ca); }
+        .wave-bar { animation: wave 1s ease-in-out infinite; }
+        .wave-bar:nth-child(2) { animation-delay: 0.1s; }
+        .wave-bar:nth-child(3) { animation-delay: 0.2s; }
+        .wave-bar:nth-child(4) { animation-delay: 0.3s; }
+        .wave-bar:nth-child(5) { animation-delay: 0.4s; }
+        /* AI Core panel */
+        .ai-core-panel {
+            background: radial-gradient(ellipse at 30% 0%, #1e1b4b 0%, #020617 55%, #0f172a 100%);
+            box-shadow: 0 0 40px rgba(99, 102, 241, 0.25), inset 0 0 60px rgba(2, 6, 23, 0.8);
+            border: 1px solid rgba(99, 102, 241, 0.35);
+        }
+        .ai-core-grid {
+            background-image:
+                linear-gradient(rgba(99, 102, 241, 0.07) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(99, 102, 241, 0.07) 1px, transparent 1px);
+            background-size: 28px 28px;
+            mask-image: radial-gradient(ellipse at center, black 30%, transparent 85%);
+            -webkit-mask-image: radial-gradient(ellipse at center, black 30%, transparent 85%);
+        }
+        @keyframes scanline { 0% { top: -10%; opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { top: 105%; opacity: 0; } }
+        .ai-core-scanline {
+            height: 2px;
+            background: linear-gradient(90deg, transparent, rgba(103, 232, 249, 0.6), transparent);
+            animation: scanline 5s linear infinite;
+        }
+        @keyframes ai-typing-blink { 0%, 100% { border-color: transparent; } 50% { border-color: rgba(148, 163, 184, 0.8); } }
+        .ai-typing { border-right: 6px solid transparent; display: inline-block; animation: ai-typing-blink 1s step-end infinite; }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen" x-data="adminApp()" x-init="init()">
@@ -892,18 +1120,29 @@ def get_admin_html() -> str:
         <div class="bg-white rounded-lg shadow-sm p-6 mb-6 flex justify-between items-center">
             <div>
                 <h1 class="text-2xl font-bold text-gray-800">Executive Copilot</h1>
-                <p class="text-gray-600">Configuration Panel</p>
+                <p class="text-gray-600">Your AI-Powered Executive Assistant</p>
             </div>
-            <button @click="shutdownServer()"
-                    class="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-md text-sm font-medium transition-colors">
-                Stop Server
-            </button>
+            <div class="flex gap-3">
+                <a href="/auth" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium transition-colors">
+                    Authorize Accounts
+                </a>
+                <button @click="shutdownServer()"
+                        class="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-md text-sm font-medium transition-colors">
+                    Stop Server
+                </button>
+            </div>
         </div>
 
         <!-- Tabs -->
         <div class="bg-white rounded-lg shadow-sm mb-6">
             <div class="border-b border-gray-200">
                 <nav class="flex -mb-px">
+                    <button @click="activeTab = 'dashboard'; loadDashboard()"
+                            :class="activeTab === 'dashboard' ? 'tab-active' : 'text-gray-500 hover:text-gray-700'"
+                            class="px-6 py-4 text-sm font-medium flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z"></path></svg>
+                        Dashboard
+                    </button>
                     <button @click="activeTab = 'general'"
                             :class="activeTab === 'general' ? 'tab-active' : 'text-gray-500 hover:text-gray-700'"
                             class="px-6 py-4 text-sm font-medium">
@@ -929,10 +1168,389 @@ def get_admin_html() -> str:
                             class="px-6 py-4 text-sm font-medium">
                         Automation
                     </button>
+                    <button @click="activeTab = 'activity'; loadActivity()"
+                            :class="activeTab === 'activity' ? 'tab-active' : 'text-gray-500 hover:text-gray-700'"
+                            class="px-6 py-4 text-sm font-medium flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                        Activity
+                        <span x-show="activityStats?.pending_count > 0" class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                    </button>
+                    <a href="/tech" target="_blank"
+                       class="px-6 py-4 text-sm font-medium flex items-center gap-2 text-gray-500 hover:text-gray-700">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2a4 4 0 014-4h6m0 0l-3-3m3 3l-3 3M9 7H5a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4"></path></svg>
+                        Tech Dashboard ↗
+                    </a>
                 </nav>
             </div>
 
             <div class="p-6">
+                <!-- Dashboard Tab -->
+                <div x-show="activeTab === 'dashboard'" x-cloak>
+                    <!-- Loading State -->
+                    <div x-show="dashboardLoading" class="flex items-center justify-center py-12">
+                        <div class="text-center">
+                            <svg class="animate-spin h-10 w-10 text-blue-600 mx-auto mb-4" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <p class="text-gray-500">Loading your daily briefing...</p>
+                        </div>
+                    </div>
+
+                    <!-- Dashboard Content -->
+                    <div x-show="!dashboardLoading && dashboard" x-cloak>
+                        <!-- Header with Date and Summary -->
+                        <div class="mb-6">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <h2 class="text-2xl font-bold text-gray-800" x-text="dashboard?.briefing?.date || 'Today'"></h2>
+                                    <p class="text-gray-600 mt-1" x-text="dashboard?.briefing?.summary_text || 'Loading...'"></p>
+                                    <p class="text-xs text-gray-400 mt-1" x-show="dashboard?.briefing?.generated_at"
+                                       x-text="'Updated ' + new Date(dashboard?.briefing?.generated_at).toLocaleString() + (dashboard?.cached ? ' (cached)' : '')"></p>
+                                </div>
+                                <button @click="loadDashboard(true)" :disabled="dashboardRefreshing"
+                                        class="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm text-gray-700 transition-colors disabled:opacity-60">
+                                    <svg class="w-4 h-4" :class="dashboardRefreshing ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                    <span x-text="dashboardRefreshing ? 'Refreshing...' : 'Refresh'"></span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Stats Cards Grid -->
+                        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+                            <!-- Meetings Card -->
+                            <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-gray-100 animate-slide-in" style="animation-delay: 0.1s">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-10 h-10 rounded-lg gradient-blue flex items-center justify-center">
+                                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                                    </div>
+                                    <div>
+                                        <p class="text-2xl font-bold text-gray-800 animate-count" x-text="dashboard?.briefing?.summary?.meetings || 0"></p>
+                                        <p class="text-xs text-gray-500">Meetings</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Tasks Due Today Card -->
+                            <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-gray-100 animate-slide-in" style="animation-delay: 0.15s">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-10 h-10 rounded-lg gradient-green flex items-center justify-center">
+                                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
+                                    </div>
+                                    <div>
+                                        <p class="text-2xl font-bold text-gray-800 animate-count" x-text="dashboard?.briefing?.summary?.tasks_due_today || 0"></p>
+                                        <p class="text-xs text-gray-500">Tasks Due</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Overdue Tasks Card -->
+                            <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-gray-100 animate-slide-in" style="animation-delay: 0.2s">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-10 h-10 rounded-lg gradient-red flex items-center justify-center">
+                                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                    </div>
+                                    <div>
+                                        <p class="text-2xl font-bold text-gray-800 animate-count" x-text="dashboard?.briefing?.summary?.tasks_overdue || 0"></p>
+                                        <p class="text-xs text-gray-500">Overdue</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Emails Needing Attention Card -->
+                            <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-gray-100 animate-slide-in" style="animation-delay: 0.25s">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-10 h-10 rounded-lg gradient-orange flex items-center justify-center">
+                                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+                                    </div>
+                                    <div>
+                                        <p class="text-2xl font-bold text-gray-800 animate-count" x-text="dashboard?.briefing?.summary?.emails_requiring_attention || 0"></p>
+                                        <p class="text-xs text-gray-500">Need Reply</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Pending Replies Card -->
+                            <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-gray-100 animate-slide-in" style="animation-delay: 0.3s">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-10 h-10 rounded-lg gradient-purple flex items-center justify-center">
+                                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
+                                    </div>
+                                    <div>
+                                        <p class="text-2xl font-bold text-gray-800 animate-count" x-text="dashboard?.briefing?.summary?.pending_replies || 0"></p>
+                                        <p class="text-xs text-gray-500">Awaiting</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Waiting on Others Card -->
+                            <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-gray-100 animate-slide-in" style="animation-delay: 0.35s">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-10 h-10 rounded-lg gradient-cyan flex items-center justify-center">
+                                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+                                    </div>
+                                    <div>
+                                        <p class="text-2xl font-bold text-gray-800 animate-count" x-text="dashboard?.briefing?.summary?.waiting_on_others || 0"></p>
+                                        <p class="text-xs text-gray-500">Delegated</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Main Content Grid -->
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <!-- Today's Schedule -->
+                            <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                                <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+                                    <h3 class="font-semibold text-gray-800 flex items-center gap-2">
+                                        <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                                        Today's Schedule
+                                    </h3>
+                                    <span class="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full" x-text="(dashboard?.briefing?.calendar?.events?.length || 0) + ' events'"></span>
+                                </div>
+                                <div class="p-4 max-h-80 overflow-y-auto">
+                                    <template x-if="dashboard?.briefing?.calendar?.events?.length > 0">
+                                        <div class="space-y-3">
+                                            <template x-for="(event, idx) in dashboard?.briefing?.calendar?.events" :key="idx">
+                                                <div class="flex gap-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+                                                    <div class="text-center min-w-[50px]">
+                                                        <p class="text-sm font-semibold text-blue-600" x-text="event.is_all_day ? 'All Day' : event.start_time"></p>
+                                                    </div>
+                                                    <div class="flex-1">
+                                                        <p class="font-medium text-gray-800" x-text="event.title"></p>
+                                                        <p class="text-xs text-gray-500" x-show="event.location" x-text="'📍 ' + event.location"></p>
+                                                        <p class="text-xs text-gray-500" x-show="event.conference_url">
+                                                            <a :href="event.conference_url" target="_blank" class="text-blue-600 hover:underline">🔗 Join Meeting</a>
+                                                        </p>
+                                                    </div>
+                                                    <div class="text-xs text-gray-400" x-text="event.duration_minutes + ' min'"></div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </template>
+                                    <template x-if="!dashboard?.briefing?.calendar?.events?.length">
+                                        <div class="text-center py-8 text-gray-400">
+                                            <svg class="w-12 h-12 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                                            <p>No meetings scheduled</p>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <!-- Emails Requiring Attention -->
+                            <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                                <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+                                    <h3 class="font-semibold text-gray-800 flex items-center gap-2">
+                                        <svg class="w-5 h-5 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+                                        Emails Needing Attention
+                                    </h3>
+                                    <span class="text-xs bg-orange-100 text-orange-700 px-2 py-1 rounded-full" x-text="(dashboard?.briefing?.emails_requiring_attention?.emails?.length || 0) + ' emails'"></span>
+                                </div>
+                                <div class="p-4 max-h-80 overflow-y-auto">
+                                    <template x-if="dashboard?.briefing?.emails_requiring_attention?.emails?.length > 0">
+                                        <div class="space-y-3">
+                                            <template x-for="(email, idx) in dashboard?.briefing?.emails_requiring_attention?.emails" :key="idx">
+                                                <div class="p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors" :class="email.done ? 'opacity-50' : ''">
+                                                    <div class="flex items-start justify-between gap-2">
+                                                        <button @click="toggleDone(email)" :title="email.done ? 'Mark as pending' : 'Mark as done (handled elsewhere)'"
+                                                                class="mt-0.5 w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors"
+                                                                :class="email.done ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300 text-transparent hover:border-green-400 hover:text-green-400'">
+                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                                                        </button>
+                                                        <div class="flex-1 min-w-0">
+                                                            <div class="flex items-center gap-2">
+                                                                <p class="font-medium text-gray-800 truncate" :class="email.done ? 'line-through' : ''" x-text="email.subject"></p>
+                                                                <span x-show="email.is_urgent" class="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded">URGENT</span>
+                                                            </div>
+                                                            <p class="text-sm text-gray-500" x-text="'From: ' + (email.from_name || email.from)"></p>
+                                                            <p class="text-xs text-gray-400 mt-1" x-text="email.snippet?.slice(0, 80) + '...'"></p>
+                                                        </div>
+                                                    </div>
+                                                    <div class="mt-2 flex items-center gap-2 flex-wrap">
+                                                        <span class="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded" x-text="email.attention_reason"></span>
+                                                        <span x-show="email.days_waiting >= 1" class="text-xs bg-amber-50 text-amber-600 px-2 py-0.5 rounded" x-text="'Waiting ' + email.days_waiting + (email.days_waiting === 1 ? ' day' : ' days')"></span>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </template>
+                                    <template x-if="!dashboard?.briefing?.emails_requiring_attention?.emails?.length">
+                                        <div class="text-center py-8 text-gray-400">
+                                            <svg class="w-12 h-12 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+                                            <p>All caught up!</p>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <!-- Tasks Section -->
+                            <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                                <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+                                    <h3 class="font-semibold text-gray-800 flex items-center gap-2">
+                                        <svg class="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>
+                                        Tasks
+                                    </h3>
+                                </div>
+                                <div class="p-4 max-h-80 overflow-y-auto">
+                                    <!-- Overdue Tasks -->
+                                    <template x-if="dashboard?.briefing?.tasks?.overdue?.length > 0">
+                                        <div class="mb-4">
+                                            <p class="text-xs font-semibold text-red-600 uppercase tracking-wider mb-2">⚠️ Overdue</p>
+                                            <div class="space-y-2">
+                                                <template x-for="(task, idx) in dashboard?.briefing?.tasks?.overdue" :key="'overdue-' + idx">
+                                                    <div class="p-3 bg-red-50 border border-red-100 rounded-lg" :class="task.done ? 'opacity-50' : ''">
+                                                        <div class="flex items-start gap-2">
+                                                            <button @click="toggleDone(task)" :title="task.done ? 'Mark as pending' : 'Mark as done (handled elsewhere)'"
+                                                                    class="mt-0.5 w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors"
+                                                                    :class="task.done ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300 text-transparent hover:border-green-400 hover:text-green-400'">
+                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                                                            </button>
+                                                            <div class="flex-1 min-w-0">
+                                                                <p class="font-medium text-gray-800" :class="task.done ? 'line-through' : ''" x-text="task.title"></p>
+                                                                <p class="text-xs text-gray-600 mt-1" x-show="task.description" x-text="task.description?.slice(0, 120) + (task.description?.length > 120 ? '…' : '')"></p>
+                                                                <div class="flex items-center gap-2 mt-1 flex-wrap">
+                                                                    <span class="text-xs text-gray-500" x-text="task.project_name" x-show="task.project_name"></span>
+                                                                    <span class="text-xs text-red-600" x-text="'Due: ' + task.due_date?.slice(0, 10)"></span>
+                                                                    <span class="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded" x-show="task.attention_reason" x-text="task.attention_reason"></span>
+                                                                    <span class="text-xs text-gray-500" x-show="task.assignee_name" x-text="'👤 ' + task.assignee_name"></span>
+                                                                </div>
+                                                                <a x-show="task.url" :href="task.url" target="_blank" class="text-xs text-blue-600 hover:underline mt-1 inline-block">Open in Asana →</a>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </template>
+                                    <!-- Due Today -->
+                                    <template x-if="dashboard?.briefing?.tasks?.due_today?.length > 0">
+                                        <div>
+                                            <p class="text-xs font-semibold text-green-600 uppercase tracking-wider mb-2">📅 Due Today</p>
+                                            <div class="space-y-2">
+                                                <template x-for="(task, idx) in dashboard?.briefing?.tasks?.due_today" :key="'today-' + idx">
+                                                    <div class="p-3 bg-green-50 border border-green-100 rounded-lg" :class="task.done ? 'opacity-50' : ''">
+                                                        <div class="flex items-start gap-2">
+                                                            <button @click="toggleDone(task)" :title="task.done ? 'Mark as pending' : 'Mark as done (handled elsewhere)'"
+                                                                    class="mt-0.5 w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors"
+                                                                    :class="task.done ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300 text-transparent hover:border-green-400 hover:text-green-400'">
+                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                                                            </button>
+                                                            <div class="flex-1 min-w-0">
+                                                                <p class="font-medium text-gray-800" :class="task.done ? 'line-through' : ''" x-text="task.title"></p>
+                                                                <p class="text-xs text-gray-600 mt-1" x-show="task.description" x-text="task.description?.slice(0, 120) + (task.description?.length > 120 ? '…' : '')"></p>
+                                                                <div class="flex items-center gap-2 mt-1 flex-wrap">
+                                                                    <span class="text-xs text-gray-500" x-text="task.project_name" x-show="task.project_name"></span>
+                                                                    <span class="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded" x-show="task.attention_reason" x-text="task.attention_reason"></span>
+                                                                    <span class="text-xs text-gray-500" x-show="task.assignee_name" x-text="'👤 ' + task.assignee_name"></span>
+                                                                </div>
+                                                                <a x-show="task.url" :href="task.url" target="_blank" class="text-xs text-blue-600 hover:underline mt-1 inline-block">Open in Asana →</a>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </template>
+                                    <template x-if="!dashboard?.briefing?.tasks?.overdue?.length && !dashboard?.briefing?.tasks?.due_today?.length">
+                                        <div class="text-center py-8 text-gray-400">
+                                            <svg class="w-12 h-12 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                            <p>No tasks due today</p>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <!-- Commitments & Follow-ups -->
+                            <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                                <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+                                    <h3 class="font-semibold text-gray-800 flex items-center gap-2">
+                                        <svg class="w-5 h-5 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
+                                        Overdue Follow-ups
+                                    </h3>
+                                </div>
+                                <div class="p-4 max-h-80 overflow-y-auto">
+                                    <template x-if="dashboard?.briefing?.overdue?.total > 0">
+                                        <div class="space-y-3">
+                                            <!-- Follow-ups -->
+                                            <template x-for="(item, idx) in dashboard?.briefing?.overdue?.follow_ups || []" :key="'fu-' + idx">
+                                                <div class="p-3 bg-yellow-50 border border-yellow-100 rounded-lg flex items-start gap-2" :class="item.done ? 'opacity-50' : ''">
+                                                    <button @click="toggleDone(item)" :title="item.done ? 'Mark as pending' : 'Mark as done (handled elsewhere)'"
+                                                            class="mt-0.5 w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors"
+                                                            :class="item.done ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300 text-transparent hover:border-green-400 hover:text-green-400'">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                                                    </button>
+                                                    <div class="flex-1 min-w-0">
+                                                    <p class="font-medium text-gray-800" :class="item.done ? 'line-through' : ''" x-text="item.title"></p>
+                                                    <p class="text-xs text-gray-500" x-text="'With: ' + item.with_person"></p>
+                                                    <span class="text-xs text-yellow-700 mt-1 inline-block" x-text="'Due: ' + item.due_date?.slice(0, 10)"></span>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                            <!-- Commitments -->
+                                            <template x-for="(item, idx) in dashboard?.briefing?.overdue?.commitments || []" :key="'cm-' + idx">
+                                                <div class="p-3 bg-purple-50 border border-purple-100 rounded-lg flex items-start gap-2" :class="item.done ? 'opacity-50' : ''">
+                                                    <button @click="toggleDone(item)" :title="item.done ? 'Mark as pending' : 'Mark as done (handled elsewhere)'"
+                                                            class="mt-0.5 w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors"
+                                                            :class="item.done ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300 text-transparent hover:border-green-400 hover:text-green-400'">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                                                    </button>
+                                                    <div class="flex-1 min-w-0">
+                                                    <div class="flex items-center gap-2">
+                                                        <span class="text-xs font-semibold" :class="item.direction === 'i_promised' ? 'text-purple-600' : 'text-cyan-600'" x-text="item.direction === 'i_promised' ? 'You promised:' : 'They promised:'"></span>
+                                                    </div>
+                                                    <p class="font-medium text-gray-800" :class="item.done ? 'line-through' : ''" x-text="item.title"></p>
+                                                    <p class="text-xs text-gray-500" x-text="'To: ' + item.person"></p>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                            <!-- Delegations -->
+                                            <template x-for="(item, idx) in dashboard?.briefing?.overdue?.delegations || []" :key="'dl-' + idx">
+                                                <div class="p-3 bg-blue-50 border border-blue-100 rounded-lg flex items-start gap-2" :class="item.done ? 'opacity-50' : ''">
+                                                    <button @click="toggleDone(item)" :title="item.done ? 'Mark as pending' : 'Mark as done (handled elsewhere)'"
+                                                            class="mt-0.5 w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors"
+                                                            :class="item.done ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300 text-transparent hover:border-green-400 hover:text-green-400'">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                                                    </button>
+                                                    <div class="flex-1 min-w-0">
+                                                    <p class="font-medium text-gray-800" :class="item.done ? 'line-through' : ''" x-text="item.title"></p>
+                                                    <p class="text-xs text-gray-500" x-text="'Assigned to: ' + item.assignee"></p>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </template>
+                                    <template x-if="!dashboard?.briefing?.overdue?.total">
+                                        <div class="text-center py-8 text-gray-400">
+                                            <svg class="w-12 h-12 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                                            <p>Nothing overdue!</p>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Errors Section -->
+                        <template x-if="dashboard?.briefing?.errors?.length > 0">
+                            <div class="mt-6 p-4 bg-red-50 border border-red-200 rounded-lg">
+                                <h4 class="font-medium text-red-800 mb-2">⚠️ Some data could not be loaded:</h4>
+                                <ul class="text-sm text-red-700 list-disc list-inside">
+                                    <template x-for="(error, idx) in dashboard?.briefing?.errors" :key="idx">
+                                        <li x-text="error"></li>
+                                    </template>
+                                </ul>
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- Error State -->
+                    <div x-show="!dashboardLoading && dashboardError" x-cloak class="text-center py-12">
+                        <svg class="w-16 h-16 mx-auto mb-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                        <h3 class="text-lg font-medium text-gray-800 mb-2">Could not load dashboard</h3>
+                        <p class="text-gray-500 mb-4" x-text="dashboardError"></p>
+                        <button @click="loadDashboard(true)" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Try Again</button>
+                    </div>
+                </div>
+
                 <!-- General Settings Tab -->
                 <div x-show="activeTab === 'general'" x-cloak>
                     <h2 class="text-lg font-semibold mb-4">General Settings</h2>
@@ -1235,6 +1853,239 @@ def get_admin_html() -> str:
                         </template>
                     </div>
                 </div>
+
+                <!-- Activity Tab -->
+                <div x-show="activeTab === 'activity'" x-cloak x-init="$watch('activeTab', val => { if(val === 'activity') startActivityMonitor(); else stopActivityMonitor(); })">
+                    <!-- AI Core: neural network canvas, always visible, reacts to live activity -->
+                    <div class="mb-6 rounded-2xl relative overflow-hidden ai-core-panel" style="height: 190px;">
+                        <canvas x-ref="aiCanvas" class="absolute inset-0 w-full h-full"></canvas>
+                        <div class="ai-core-grid absolute inset-0 pointer-events-none"></div>
+                        <div class="ai-core-scanline absolute inset-x-0 pointer-events-none"></div>
+                        <div class="relative h-full flex items-center justify-between px-8 pointer-events-none">
+                            <div>
+                                <div class="flex items-center gap-3">
+                                    <span class="relative flex h-3 w-3">
+                                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"
+                                              :class="activityStats?.pending_count > 0 ? 'bg-fuchsia-400' : 'bg-cyan-400'"></span>
+                                        <span class="relative inline-flex rounded-full h-3 w-3"
+                                              :class="activityStats?.pending_count > 0 ? 'bg-fuchsia-400' : 'bg-cyan-400'"></span>
+                                    </span>
+                                    <h3 class="text-xl font-bold tracking-[0.3em] text-white font-mono">AI CORE</h3>
+                                </div>
+                                <p class="mt-2 font-mono text-sm tracking-widest transition-colors duration-500"
+                                   :class="activityStats?.pending_count > 0 ? 'text-fuchsia-300' : 'text-cyan-300'"
+                                   x-text="activityStats?.pending_count > 0
+                                       ? '▸ PROCESSING ' + activityStats.pending_count + ' TOOL' + (activityStats.pending_count > 1 ? 'S' : '')
+                                       : '▸ ONLINE — STANDBY'"></p>
+                                <p class="mt-1 font-mono text-xs text-slate-400 h-4 ai-typing"
+                                   x-show="activityStats?.pending_count > 0" x-cloak
+                                   x-text="(activities.find(a => a.status === 'pending')?.tool_name || '') + '()'"></p>
+                            </div>
+                            <div class="text-right">
+                                <div class="flex items-center gap-2 justify-end">
+                                    <span class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+                                    <span class="text-xs font-mono tracking-widest text-green-300">LIVE FEED</span>
+                                </div>
+                                <p class="mt-2 font-mono text-3xl font-bold text-white" x-text="activityStats?.total_calls || 0"></p>
+                                <p class="font-mono text-[10px] tracking-[0.25em] text-slate-400">OPERATIONS</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Header with Stats -->
+                    <div class="flex justify-between items-center mb-6">
+                        <div>
+                            <h2 class="text-lg font-semibold flex items-center gap-2">
+                                MCP Activity Monitor
+                                <span x-show="activityAutoRefresh" class="flex items-center gap-1 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
+                                    <span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
+                                    Live
+                                </span>
+                            </h2>
+                            <p class="text-sm text-gray-500">Real-time view of AI assistant tool executions</p>
+                        </div>
+                        <div class="flex gap-3 items-center">
+                            <button @click="clearActivity()" class="flex items-center gap-2 px-3 py-2 bg-red-50 hover:bg-red-100 rounded-lg text-sm text-red-700 transition-colors">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                Clear
+                            </button>
+                            <div class="flex items-center gap-2 bg-gray-100 rounded-lg px-3 py-2">
+                                <span class="text-sm text-gray-600">Auto-refresh</span>
+                                <button @click="activityAutoRefresh = !activityAutoRefresh; toggleAutoRefresh()"
+                                        class="relative w-11 h-6 rounded-full transition-colors duration-200"
+                                        :class="activityAutoRefresh ? 'bg-green-500' : 'bg-gray-300'">
+                                    <span class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200"
+                                          :class="activityAutoRefresh ? 'translate-x-5' : ''"></span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Stats Cards -->
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                        <div class="stat-card bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl p-4 text-white">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-3xl font-bold animate-count" :key="activityStats?.total_calls" x-text="activityStats?.total_calls || 0"></p>
+                                    <p class="text-blue-100 text-sm">Total Calls</p>
+                                </div>
+                                <svg class="w-10 h-10 text-blue-200 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                            </div>
+                        </div>
+                        <div class="stat-card bg-gradient-to-br from-green-500 to-green-600 rounded-xl p-4 text-white">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-3xl font-bold animate-count" :key="activityStats?.successful_calls" x-text="activityStats?.successful_calls || 0"></p>
+                                    <p class="text-green-100 text-sm">Successful</p>
+                                </div>
+                                <svg class="w-10 h-10 text-green-200 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            </div>
+                        </div>
+                        <div class="stat-card bg-gradient-to-br from-red-500 to-red-600 rounded-xl p-4 text-white">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-3xl font-bold animate-count" :key="activityStats?.failed_calls" x-text="activityStats?.failed_calls || 0"></p>
+                                    <p class="text-red-100 text-sm">Failed</p>
+                                </div>
+                                <svg class="w-10 h-10 text-red-200 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            </div>
+                        </div>
+                        <div class="stat-card bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl p-4 text-white">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-3xl font-bold animate-count" :key="activityStats?.success_rate" x-text="(activityStats?.success_rate || 0) + '%'"></p>
+                                    <p class="text-purple-100 text-sm">Success Rate</p>
+                                </div>
+                                <svg class="w-10 h-10 text-purple-200 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Main Grid -->
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+                        <!-- Tools Used Chart -->
+                        <div class="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
+                            <h3 class="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                                <svg class="w-5 h-5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                                Tools Used
+                            </h3>
+                            <div class="space-y-3 max-h-72 overflow-y-auto">
+                                <template x-for="[tool, count] in Object.entries(activityStats?.tools_used || {}).sort((a,b) => b[1] - a[1]).slice(0, 10)" :key="tool">
+                                    <div class="group">
+                                        <div class="flex justify-between text-sm mb-1">
+                                            <span class="font-mono text-gray-700 group-hover:text-indigo-600 transition-colors truncate" x-text="tool"></span>
+                                            <span class="text-gray-500 font-medium" x-text="count"></span>
+                                        </div>
+                                        <div class="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden">
+                                            <div class="bg-gradient-to-r from-indigo-500 to-purple-500 h-2.5 rounded-full transition-all duration-700 ease-out"
+                                                 :style="'width: ' + (count / Math.max(...Object.values(activityStats?.tools_used || {1:1})) * 100) + '%'"></div>
+                                        </div>
+                                    </div>
+                                </template>
+                                <template x-if="Object.keys(activityStats?.tools_used || {}).length === 0">
+                                    <div class="text-center py-8 text-gray-400">
+                                        <svg class="w-12 h-12 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path></svg>
+                                        <p class="text-sm">No tools used yet</p>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+
+                        <!-- Activity Feed -->
+                        <div class="lg:col-span-2 bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+                            <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+                                <h3 class="font-semibold text-gray-800 flex items-center gap-2">
+                                    <svg class="w-5 h-5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
+                                    Activity Feed
+                                </h3>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs text-gray-500" x-text="activities.length + ' events'"></span>
+                                    <span x-show="activityLoading" class="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></span>
+                                </div>
+                            </div>
+                            <div class="max-h-96 overflow-y-auto">
+                                <template x-if="activities.length > 0">
+                                    <div class="divide-y divide-gray-100">
+                                        <template x-for="(activity, idx) in activities" :key="activity.id + '-' + activity.status">
+                                            <div class="px-4 py-3 hover:bg-indigo-50/50 transition-all duration-200"
+                                                 :class="{'bg-yellow-50': activity.status === 'pending', 'animate-slide-in': idx < 3}">
+                                                <div class="flex items-start gap-3">
+                                                    <!-- Status Icon -->
+                                                    <div class="mt-0.5 flex-shrink-0">
+                                                        <template x-if="activity.status === 'pending'">
+                                                            <div class="w-9 h-9 rounded-full bg-gradient-to-br from-yellow-400 to-orange-400 flex items-center justify-center shadow-lg shadow-yellow-200">
+                                                                <svg class="w-5 h-5 text-white animate-spin" fill="none" viewBox="0 0 24 24">
+                                                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                                </svg>
+                                                            </div>
+                                                        </template>
+                                                        <template x-if="activity.status === 'success'">
+                                                            <div class="w-9 h-9 rounded-full bg-gradient-to-br from-green-400 to-emerald-500 flex items-center justify-center shadow-lg shadow-green-200">
+                                                                <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>
+                                                            </div>
+                                                        </template>
+                                                        <template x-if="activity.status === 'error'">
+                                                            <div class="w-9 h-9 rounded-full bg-gradient-to-br from-red-400 to-rose-500 flex items-center justify-center shadow-lg shadow-red-200">
+                                                                <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                                            </div>
+                                                        </template>
+                                                    </div>
+                                                    <!-- Content -->
+                                                    <div class="flex-1 min-w-0">
+                                                        <div class="flex items-center gap-2 flex-wrap">
+                                                            <span class="font-mono text-sm font-bold text-gray-800" x-text="activity.tool_name"></span>
+                                                            <span class="text-xs px-2 py-0.5 rounded-full font-medium"
+                                                                  :class="{
+                                                                      'bg-yellow-100 text-yellow-700 animate-pulse': activity.status === 'pending',
+                                                                      'bg-green-100 text-green-700': activity.status === 'success',
+                                                                      'bg-red-100 text-red-700': activity.status === 'error'
+                                                                  }"
+                                                                  x-text="activity.status === 'pending' ? 'processing...' : activity.status"></span>
+                                                            <span class="text-xs text-gray-400 font-mono" x-show="activity.duration_ms" x-text="activity.duration_ms + 'ms'"></span>
+                                                        </div>
+                                                        <p class="text-xs text-gray-400 mt-0.5" x-text="new Date(activity.timestamp).toLocaleTimeString()"></p>
+                                                        <!-- Args (collapsible) -->
+                                                        <template x-if="Object.keys(activity.args || {}).length > 0">
+                                                            <details class="mt-2">
+                                                                <summary class="text-xs text-indigo-600 cursor-pointer hover:text-indigo-800">View parameters</summary>
+                                                                <div class="mt-1 text-xs text-gray-600 font-mono bg-gray-50 rounded-lg px-3 py-2 overflow-x-auto" x-text="JSON.stringify(activity.args, null, 2)"></div>
+                                                            </details>
+                                                        </template>
+                                                        <!-- Result -->
+                                                        <template x-if="activity.result_summary">
+                                                            <p class="mt-1.5 text-xs text-emerald-600 flex items-center gap-1">
+                                                                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>
+                                                                <span x-text="activity.result_summary"></span>
+                                                            </p>
+                                                        </template>
+                                                        <!-- Error -->
+                                                        <template x-if="activity.error_message">
+                                                            <p class="mt-1.5 text-xs text-red-600 flex items-center gap-1">
+                                                                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+                                                                <span x-text="activity.error_message"></span>
+                                                            </p>
+                                                        </template>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </template>
+                                <template x-if="activities.length === 0 && !activityLoading">
+                                    <div class="text-center py-16 text-gray-400">
+                                        <div class="w-20 h-20 mx-auto mb-4 rounded-full bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center">
+                                            <svg class="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                                        </div>
+                                        <p class="font-medium text-gray-500">No activity yet</p>
+                                        <p class="text-sm mt-1">Tool executions will appear here in real-time</p>
+                                        <p class="text-xs mt-3 text-gray-400">Try using the MCP server from Claude Desktop</p>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1523,7 +2374,7 @@ def get_admin_html() -> str:
     <script>
         function adminApp() {
             return {
-                activeTab: 'general',
+                activeTab: 'dashboard',
                 settings: {
                     general: {environment: 'development', debug: true, log_level: 'INFO', ai_provider: 'openai', default_model: 'gpt-4o-mini', premium_model: 'gpt-4o', max_tokens: 4096, temperature: 0.7, azure_endpoint: '', azure_deployment: '', local_base_url: ''},
                     database: {driver: 'sqlite+aiosqlite', name: 'executive_copilot.db', host: 'localhost', port: 5432}
@@ -1533,6 +2384,20 @@ def get_admin_html() -> str:
                 credentials: [],
                 automationJobs: [],
                 options: {aiProviders: [], models: {}, contextSources: [], orgTypes: [], jobTypes: [], providerTypes: []},
+
+                // Dashboard
+                dashboard: null,
+                dashboardLoading: false,
+                dashboardRefreshing: false,
+                dashboardError: null,
+
+                // Activity
+                activities: [],
+                activityStats: null,
+                activityLoading: false,
+                activityAutoRefresh: false,
+                activityRefreshInterval: null,
+                aiCanvasNet: null,
 
                 // Modals
                 showOrgModal: false,
@@ -1559,8 +2424,213 @@ def get_admin_html() -> str:
                         this.loadOrganizations(),
                         this.loadContextRules(),
                         this.loadCredentials(),
-                        this.loadAutomationJobs()
+                        this.loadAutomationJobs(),
+                        this.loadDashboard()
                     ]);
+                },
+
+                async loadDashboard(forceRefresh = false) {
+                    // Only blank the screen on first load; refreshes keep current data visible
+                    if (!this.dashboard) this.dashboardLoading = true;
+                    this.dashboardRefreshing = forceRefresh;
+                    this.dashboardError = null;
+                    try {
+                        const url = forceRefresh ? '/api/dashboard?refresh=true' : '/api/dashboard';
+                        const response = await fetch(url);
+                        const data = await response.json();
+                        if (data.status === 'error') {
+                            this.dashboardError = data.error;
+                        } else {
+                            this.dashboard = data;
+                        }
+                    } catch (e) {
+                        this.dashboardError = 'Failed to connect to server';
+                    } finally {
+                        this.dashboardLoading = false;
+                        this.dashboardRefreshing = false;
+                    }
+                },
+
+                async toggleDone(item) {
+                    if (!item.item_key) return;
+                    const newDone = !item.done;
+                    try {
+                        const response = await fetch('/api/dashboard/done', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({key: item.item_key, done: newDone})
+                        });
+                        if (!response.ok) throw new Error('Request failed');
+                        item.done = newDone;
+                    } catch (e) {
+                        this.showToast('Could not update item', 'error');
+                    }
+                },
+
+                async loadActivity() {
+                    this.activityLoading = true;
+                    try {
+                        const response = await fetch('/api/activity');
+                        const data = await response.json();
+                        this.activities = data.activities || [];
+                        this.activityStats = data.stats || {};
+                    } catch (e) {
+                        console.error('Failed to load activity:', e);
+                    } finally {
+                        this.activityLoading = false;
+                    }
+                },
+
+                async clearActivity() {
+                    if (confirm('Clear all activity history?')) {
+                        await fetch('/api/activity/clear', {method: 'POST'});
+                        await this.loadActivity();
+                        this.showToast('Activity cleared', 'success');
+                    }
+                },
+
+                toggleAutoRefresh() {
+                    if (this.activityAutoRefresh) {
+                        this.startActivityMonitor();
+                    } else {
+                        this.stopActivityMonitor();
+                    }
+                },
+
+                startActivityMonitor() {
+                    this.loadActivity();
+                    this.activityAutoRefresh = true;
+                    if (!this.activityRefreshInterval) {
+                        this.activityRefreshInterval = setInterval(() => this.loadActivity(), 1500);
+                    }
+                    // Canvas is inside an x-show container; wait a tick until it's visible
+                    this.$nextTick(() => this.startAICanvas());
+                },
+
+                stopActivityMonitor() {
+                    if (this.activityRefreshInterval) {
+                        clearInterval(this.activityRefreshInterval);
+                        this.activityRefreshInterval = null;
+                    }
+                    this.activityAutoRefresh = false;
+                    this.stopAICanvas();
+                },
+
+                startAICanvas() {
+                    const canvas = this.$refs.aiCanvas;
+                    if (!canvas || this.aiCanvasNet) {
+                        if (this.aiCanvasNet) this.aiCanvasNet.running = true;
+                        if (this.aiCanvasNet && !this.aiCanvasNet.raf) this.aiCanvasNet.tick();
+                        return;
+                    }
+                    const ctx = canvas.getContext('2d');
+                    const dpr = window.devicePixelRatio || 1;
+                    const N = 26;
+                    const net = {
+                        running: true, raf: null, energy: 0.15, pulses: [], nodes: [],
+                        resize() {
+                            canvas.width = canvas.clientWidth * dpr;
+                            canvas.height = canvas.clientHeight * dpr;
+                        },
+                        isActive: () => (this.activityStats?.pending_count || 0) > 0,
+                    };
+                    net.resize();
+                    window.addEventListener('resize', () => net.resize());
+                    for (let i = 0; i < N; i++) {
+                        net.nodes.push({
+                            x: Math.random(), y: Math.random(),
+                            vx: (Math.random() - 0.5) * 0.0006, vy: (Math.random() - 0.5) * 0.0006,
+                            r: 1.5 + Math.random() * 2, phase: Math.random() * Math.PI * 2,
+                        });
+                    }
+                    net.tick = () => {
+                        if (!net.running) { net.raf = null; return; }
+                        const W = canvas.width, H = canvas.height;
+                        // Ease energy toward target: calm cyan when idle, hot violet when processing
+                        const target = net.isActive() ? 1 : 0.15;
+                        net.energy += (target - net.energy) * 0.04;
+                        const e = net.energy;
+                        const hue = 190 + 85 * e;  // cyan -> violet/fuchsia
+                        const t = performance.now() / 1000;
+
+                        ctx.clearRect(0, 0, W, H);
+
+                        // Drift nodes
+                        const speed = 1 + e * 3;
+                        for (const n of net.nodes) {
+                            n.x += n.vx * speed; n.y += n.vy * speed;
+                            if (n.x < 0.02 || n.x > 0.98) n.vx *= -1;
+                            if (n.y < 0.05 || n.y > 0.95) n.vy *= -1;
+                        }
+
+                        // Edges between nearby nodes
+                        const edges = [];
+                        const maxDist = 0.22;
+                        for (let i = 0; i < N; i++) {
+                            for (let j = i + 1; j < N; j++) {
+                                const a = net.nodes[i], b = net.nodes[j];
+                                const dx = a.x - b.x, dy = a.y - b.y;
+                                const d = Math.sqrt(dx * dx + dy * dy);
+                                if (d < maxDist) edges.push([a, b, 1 - d / maxDist]);
+                            }
+                        }
+                        for (const [a, b, s] of edges) {
+                            ctx.strokeStyle = `hsla(${hue}, 90%, 65%, ${s * (0.10 + e * 0.25)})`;
+                            ctx.lineWidth = dpr;
+                            ctx.beginPath();
+                            ctx.moveTo(a.x * W, a.y * H);
+                            ctx.lineTo(b.x * W, b.y * H);
+                            ctx.stroke();
+                        }
+
+                        // Spawn pulses that travel along edges (more when active)
+                        if (edges.length && Math.random() < 0.04 + e * 0.35) {
+                            net.pulses.push({ edge: edges[Math.floor(Math.random() * edges.length)], t: 0 });
+                        }
+                        net.pulses = net.pulses.filter(p => p.t <= 1);
+                        for (const p of net.pulses) {
+                            p.t += 0.02 + e * 0.03;
+                            const [a, b] = p.edge;
+                            const x = (a.x + (b.x - a.x) * p.t) * W;
+                            const y = (a.y + (b.y - a.y) * p.t) * H;
+                            const g = ctx.createRadialGradient(x, y, 0, x, y, 6 * dpr);
+                            g.addColorStop(0, `hsla(${hue}, 100%, 80%, 0.9)`);
+                            g.addColorStop(1, `hsla(${hue}, 100%, 80%, 0)`);
+                            ctx.fillStyle = g;
+                            ctx.beginPath();
+                            ctx.arc(x, y, 6 * dpr, 0, Math.PI * 2);
+                            ctx.fill();
+                        }
+
+                        // Nodes with breathing glow
+                        for (const n of net.nodes) {
+                            const glow = 0.5 + 0.5 * Math.sin(t * (1 + e * 3) + n.phase);
+                            const x = n.x * W, y = n.y * H, r = n.r * dpr * (1 + glow * 0.5);
+                            const g = ctx.createRadialGradient(x, y, 0, x, y, r * 4);
+                            g.addColorStop(0, `hsla(${hue}, 95%, 72%, ${0.5 + e * 0.4})`);
+                            g.addColorStop(1, `hsla(${hue}, 95%, 72%, 0)`);
+                            ctx.fillStyle = g;
+                            ctx.beginPath();
+                            ctx.arc(x, y, r * 4, 0, Math.PI * 2);
+                            ctx.fill();
+                            ctx.fillStyle = `hsla(${hue}, 100%, 88%, 0.95)`;
+                            ctx.beginPath();
+                            ctx.arc(x, y, r, 0, Math.PI * 2);
+                            ctx.fill();
+                        }
+
+                        net.raf = requestAnimationFrame(net.tick);
+                    };
+                    this.aiCanvasNet = net;
+                    net.tick();
+                },
+
+                stopAICanvas() {
+                    if (this.aiCanvasNet) {
+                        this.aiCanvasNet.running = false;
+                        if (this.aiCanvasNet.raf) cancelAnimationFrame(this.aiCanvasNet.raf);
+                        this.aiCanvasNet.raf = null;
+                    }
                 },
 
                 async shutdownServer() {

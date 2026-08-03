@@ -351,7 +351,12 @@ class OAuthManager:
             )
 
             if response.status_code != 200:
-                logger.error("Failed to refresh Google token", account_id=account_id)
+                logger.error(
+                    "Failed to refresh Google token",
+                    account_id=account_id,
+                    status_code=response.status_code,
+                    response=response.text,
+                )
                 return None
 
             tokens = response.json()

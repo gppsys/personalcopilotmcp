@@ -1,22 +1,100 @@
 """MCP server implementation using FastMCP with multi-account aggregation."""
 
 import asyncio
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
 from fastmcp import FastMCP
+from fastmcp.server.middleware import Middleware
 
 from executive_copilot.admin.credentials import CredentialManager
 from executive_copilot.config import AppConfig
 from executive_copilot.logging import get_logger
+from executive_copilot.mcp.activity import get_tracker
 from executive_copilot.providers.calendar.google import GoogleCalendarProvider
 from executive_copilot.providers.calendar.outlook import OutlookCalendarProvider
+from executive_copilot.providers.communication import SlackProvider
 from executive_copilot.providers.email.gmail import GmailProvider
 from executive_copilot.providers.email.outlook import OutlookProvider
 from executive_copilot.providers.task.asana import AsanaProvider
 
 logger = get_logger(__name__)
+
+
+class ActivityTrackingMiddleware(Middleware):
+    """Middleware to track all tool executions."""
+
+    async def on_call_tool(
+        self,
+        context: Any,
+        call_next: Any,
+    ) -> Any:
+        """Track tool calls. Tracking failures must never break the tool call."""
+        activity_id = None
+        try:
+            tracker = get_tracker()
+            message = getattr(context, "message", None)
+            tool_name = getattr(message, "name", None) or "unknown"
+            args = dict(getattr(message, "arguments", None) or {})
+            activity_id = tracker.start_activity(tool_name, args)
+        except Exception:
+            logger.warning("activity_tracking_start_failed", exc_info=True)
+
+        try:
+            result = await call_next(context)
+        except Exception as e:
+            if activity_id is not None:
+                try:
+                    tracker.complete_activity(activity_id, error_message=str(e))
+                except Exception:
+                    logger.warning("activity_tracking_complete_failed", exc_info=True)
+            raise
+
+        if activity_id is not None:
+            try:
+                tracker.complete_activity(
+                    activity_id, result_summary=self._summarize_result(result)
+                )
+            except Exception:
+                logger.warning("activity_tracking_complete_failed", exc_info=True)
+        return result
+
+    def _summarize_result(self, result: Sequence[Any] | Any) -> str:
+        """Create a brief summary of a tool result."""
+        if result is None:
+            return "No result"
+
+        if hasattr(result, "content"):
+            content = result.content
+            if content and len(content) > 0:
+                first = content[0]
+                if hasattr(first, "text"):
+                    text = first.text
+                    if isinstance(text, str):
+                        if "error" in text.lower()[:50]:
+                            return "Error in result"
+                        return f"Text: {len(text)} chars"
+            return "Empty result"
+
+        if isinstance(result, dict):
+            if "error" in result:
+                return f"Error: {result['error']}"
+            if "total" in result:
+                return f"Total: {result['total']}"
+            if "total_unread" in result:
+                return f"Unread: {result['total_unread']}"
+            if "total_events" in result:
+                return f"Events: {result['total_events']}"
+            if "success" in result:
+                return "Success" if result["success"] else "Failed"
+            return f"Dict with {len(result)} keys"
+
+        if isinstance(result, list):
+            return f"List: {len(result)} items"
+
+        return str(type(result).__name__)
 
 
 def create_mcp_server(
@@ -27,6 +105,7 @@ def create_mcp_server(
     mcp = FastMCP(
         name=config.mcp.name,
         version=config.mcp.version,
+        middleware=[ActivityTrackingMiddleware()],
     )
 
     if credential_manager is None:
@@ -35,18 +114,47 @@ def create_mcp_server(
     # --- Helper functions to get provider accounts ---
 
     def get_email_accounts() -> list[dict[str, str]]:
-        """Get all configured email accounts with provider info."""
+        """Get all configured email accounts with provider info.
+
+        Accounts are deduplicated by (account_id, provider): the same mailbox
+        may be listed under several organizations (e.g. a personal account
+        that also receives school email), but it must only be fetched once.
+        The first organization that declares the account is treated as its
+        home organization; per-email organization is refined afterwards by
+        sender domain via ``classify_email_organization``.
+        """
         accounts = []
+        seen = set()
         for org in config.organizations:
             for pa in org.provider_accounts:
                 if pa.provider_type == "email":
-                    accounts.append({
-                        "account_id": pa.account_id,
-                        "provider": pa.provider_name,
-                        "organization": org.name,
-                        "org_type": org.organization_type,
-                    })
+                    key = (pa.account_id, pa.provider_name)
+                    if key not in seen:
+                        seen.add(key)
+                        accounts.append({
+                            "account_id": pa.account_id,
+                            "provider": pa.provider_name,
+                            "organization": org.name,
+                            "org_type": org.organization_type,
+                        })
         return accounts
+
+    def classify_email_organization(sender_address: str, fallback_org: str) -> str:
+        """Classify an email into an organization by its sender domain.
+
+        Falls back to the account's home organization when no org's domains
+        match the sender. Subdomains match too (mail.wingate.edu.mx matches
+        wingate.edu.mx), but bare TLD-like entries are matched exactly.
+        """
+        domain = sender_address.rsplit("@", 1)[-1].lower() if "@" in sender_address else ""
+        if not domain:
+            return fallback_org
+        for org in config.organizations:
+            for d in org.domains:
+                d = d.lower()
+                if domain == d or domain.endswith("." + d):
+                    return org.name
+        return fallback_org
 
     def get_calendar_accounts() -> list[dict[str, str]]:
         """Get all configured calendar accounts with provider info."""
@@ -84,10 +192,34 @@ def create_mcp_server(
                         })
         return accounts
 
+    def get_communication_accounts() -> list[dict[str, str]]:
+        """Get all configured communication accounts with provider info."""
+        accounts = []
+        seen = set()
+        for org in config.organizations:
+            for pa in org.provider_accounts:
+                if pa.provider_type == "communication":
+                    key = (pa.account_id, pa.provider_name)
+                    if key not in seen:
+                        seen.add(key)
+                        accounts.append({
+                            "account_id": pa.account_id,
+                            "provider": pa.provider_name,
+                            "organization": org.name,
+                            "org_type": org.organization_type,
+                        })
+        return accounts
+
     def is_account_authorized(provider_type: str, provider_name: str, account_id: str) -> bool:
         """Check if an account has valid credentials."""
         cred = credential_manager.get_credential(provider_type, provider_name, account_id)
-        return cred is not None and cred.get("access_token") is not None
+        if not cred:
+            return False
+        extra = cred.get("extra") or {}
+        return any(
+            cred.get(key) is not None
+            for key in ("access_token", "api_key", "client_id", "client_secret")
+        ) or any(extra.get(key) is not None for key in ("bot_token", "app_token"))
 
     def get_email_provider(provider_name: str, account_id: str) -> GmailProvider | OutlookProvider:
         """Get email provider instance."""
@@ -110,6 +242,12 @@ def create_mcp_server(
         if provider_name == "asana":
             return AsanaProvider(credential_manager, account_id)
         raise ValueError(f"Unknown task provider: {provider_name}")
+
+    def get_communication_provider(provider_name: str, account_id: str) -> SlackProvider:
+        """Get communication provider instance."""
+        if provider_name == "slack":
+            return SlackProvider(credential_manager, account_id)
+        raise ValueError(f"Unknown communication provider: {provider_name}")
 
     # --- Email Tools ---
 
@@ -148,35 +286,41 @@ def create_mcp_server(
         responses = await asyncio.gather(*tasks)
 
         for acc, emails, error in responses:
-            org_name = acc["organization"]
-            if org_name not in results["by_organization"]:
-                results["by_organization"][org_name] = {
-                    "count": 0,
-                    "accounts": [],
-                }
-
             if error:
                 results["errors"].append({"account": acc["account_id"], "error": error})
-            else:
-                results["by_organization"][org_name]["count"] += len(emails)
+                continue
+
+            results["total_unread"] += len(emails)
+            account_counts: dict[str, int] = {}
+
+            for e in emails:
+                org_name = classify_email_organization(
+                    e.sender.address, acc["organization"]
+                )
+                account_counts[org_name] = account_counts.get(org_name, 0) + 1
+                results["emails"].append({
+                    "account": acc["account_id"],
+                    "organization": org_name,
+                    "subject": e.subject,
+                    "from": e.sender.address,
+                    "from_name": e.sender.display_name,
+                    "received_at": e.received_at.isoformat(),
+                    "snippet": e.snippet,
+                    "has_attachments": e.has_attachments,
+                })
+
+            for org_name, count in account_counts.items():
+                if org_name not in results["by_organization"]:
+                    results["by_organization"][org_name] = {
+                        "count": 0,
+                        "accounts": [],
+                    }
+                results["by_organization"][org_name]["count"] += count
                 results["by_organization"][org_name]["accounts"].append({
                     "account": acc["account_id"],
                     "provider": acc["provider"],
-                    "count": len(emails),
+                    "count": count,
                 })
-                results["total_unread"] += len(emails)
-
-                for e in emails:
-                    results["emails"].append({
-                        "account": acc["account_id"],
-                        "organization": org_name,
-                        "subject": e.subject,
-                        "from": e.sender.address,
-                        "from_name": e.sender.display_name,
-                        "received_at": e.received_at.isoformat(),
-                        "snippet": e.snippet,
-                        "has_attachments": e.has_attachments,
-                    })
 
         results["emails"].sort(key=lambda x: x["received_at"], reverse=True)
         return results
@@ -341,28 +485,26 @@ def create_mcp_server(
             "accounts": [],
         }
 
-        async def get_summary(acc: dict[str, str]) -> tuple[dict[str, str], int, str | None]:
+        async def get_summary(
+            acc: dict[str, str],
+        ) -> tuple[dict[str, str], list[Any], str | None]:
             if not is_account_authorized("email", acc["provider"], acc["account_id"]):
-                return acc, 0, "Not authorized"
+                return acc, [], "Not authorized"
             try:
                 provider = get_email_provider(acc["provider"], acc["account_id"])
                 unread = await provider.get_unread(max_results=100)
-                return acc, len(unread), None
+                return acc, unread, None
             except Exception as e:
-                return acc, 0, str(e)
+                return acc, [], str(e)
 
         tasks = [get_summary(acc) for acc in accounts]
         responses = await asyncio.gather(*tasks)
 
-        for acc, count, error in responses:
-            org_name = acc["organization"]
-            if org_name not in results["by_organization"]:
-                results["by_organization"][org_name] = 0
-
+        for acc, unread, error in responses:
             account_info = {
                 "account": acc["account_id"],
                 "provider": acc["provider"],
-                "organization": org_name,
+                "organization": acc["organization"],
                 "authorized": error is None,
             }
 
@@ -370,9 +512,17 @@ def create_mcp_server(
                 account_info["error"] = error
                 account_info["unread"] = 0
             else:
-                account_info["unread"] = count
-                results["by_organization"][org_name] += count
-                results["total_unread"] += count
+                account_info["unread"] = len(unread)
+                results["total_unread"] += len(unread)
+                # Attribute each email to an organization by sender domain,
+                # falling back to the account's home organization.
+                for e in unread:
+                    org_name = classify_email_organization(
+                        e.sender.address, acc["organization"]
+                    )
+                    results["by_organization"][org_name] = (
+                        results["by_organization"].get(org_name, 0) + 1
+                    )
 
             results["accounts"].append(account_info)
 
@@ -2859,6 +3009,207 @@ def create_mcp_server(
             "delegations": [serialize_delegation(d) for d in delegations],
         }
 
+    # --- Slack Tools ---
+
+    def serialize_slack_channel(channel: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": channel.get("id"),
+            "name": channel.get("name"),
+            "is_channel": channel.get("is_channel"),
+            "is_private": channel.get("is_private"),
+            "is_member": channel.get("is_member"),
+            "is_archived": channel.get("is_archived"),
+            "num_members": channel.get("num_members"),
+            "topic": (channel.get("topic") or {}).get("value"),
+            "purpose": (channel.get("purpose") or {}).get("value"),
+        }
+
+    def serialize_slack_message(message: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "type": message.get("type"),
+            "subtype": message.get("subtype"),
+            "user": message.get("user"),
+            "username": message.get("username"),
+            "text": message.get("text"),
+            "ts": message.get("ts"),
+            "thread_ts": message.get("thread_ts"),
+            "reply_count": message.get("reply_count"),
+            "permalink": message.get("permalink"),
+            "channel": message.get("channel") or message.get("channel_name"),
+        }
+
+    @mcp.tool()
+    async def slack_status(account_id: str = "default") -> dict[str, Any]:
+        """Check Slack connection status.
+
+        Args:
+            account_id: Slack credential account ID, usually "default"
+
+        Returns:
+            Slack auth test result without tokens
+        """
+        if not is_account_authorized("communication", "slack", account_id):
+            return {"authorized": False, "account_id": account_id, "error": "Slack is not authorized"}
+
+        try:
+            provider = get_communication_provider("slack", account_id)
+            auth = await provider.auth_test()
+            return {
+                "authorized": True,
+                "account_id": account_id,
+                "team": auth.get("team"),
+                "team_id": auth.get("team_id"),
+                "user": auth.get("user"),
+                "user_id": auth.get("user_id"),
+                "bot_id": auth.get("bot_id"),
+            }
+        except Exception as e:
+            return {"authorized": False, "account_id": account_id, "error": str(e)}
+
+    @mcp.tool()
+    async def list_slack_channels(
+        account_id: str = "default",
+        limit: int = 100,
+        cursor: str | None = None,
+        exclude_archived: bool = True,
+    ) -> dict[str, Any]:
+        """List Slack channels and conversations visible to the bot.
+
+        Args:
+            account_id: Slack credential account ID, usually "default"
+            limit: Maximum channels to return
+            cursor: Pagination cursor from a previous result
+            exclude_archived: Whether to skip archived channels
+
+        Returns:
+            Slack channels plus a next cursor if more results exist
+        """
+        if not is_account_authorized("communication", "slack", account_id):
+            return {"error": f"Slack account '{account_id}' is not authorized"}
+
+        try:
+            provider = get_communication_provider("slack", account_id)
+            data = await provider.list_channels(
+                limit=limit,
+                cursor=cursor,
+                exclude_archived=exclude_archived,
+            )
+            metadata = data.get("response_metadata") or {}
+            channels = [serialize_slack_channel(c) for c in data.get("channels", [])]
+            return {
+                "account_id": account_id,
+                "count": len(channels),
+                "channels": channels,
+                "next_cursor": metadata.get("next_cursor") or None,
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool()
+    async def get_slack_channel_history(
+        channel_id: str,
+        account_id: str = "default",
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Get recent Slack messages for a channel visible to the bot.
+
+        Args:
+            channel_id: Slack channel/conversation ID, e.g. C123...
+            account_id: Slack credential account ID, usually "default"
+            limit: Maximum messages to return
+            cursor: Pagination cursor from a previous result
+
+        Returns:
+            Recent Slack messages plus a next cursor if more results exist
+        """
+        if not is_account_authorized("communication", "slack", account_id):
+            return {"error": f"Slack account '{account_id}' is not authorized"}
+
+        try:
+            provider = get_communication_provider("slack", account_id)
+            data = await provider.channel_history(channel_id, limit=limit, cursor=cursor)
+            metadata = data.get("response_metadata") or {}
+            messages = [serialize_slack_message(m) for m in data.get("messages", [])]
+            return {
+                "account_id": account_id,
+                "channel_id": channel_id,
+                "count": len(messages),
+                "messages": messages,
+                "has_more": data.get("has_more", False),
+                "next_cursor": metadata.get("next_cursor") or None,
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool()
+    async def join_slack_channel(
+        channel_id: str,
+        account_id: str = "default",
+    ) -> dict[str, Any]:
+        """Join a public Slack channel so the bot can read its history.
+
+        Args:
+            channel_id: Slack public channel ID, e.g. C123...
+            account_id: Slack credential account ID, usually "default"
+
+        Returns:
+            Joined channel information
+        """
+        if not is_account_authorized("communication", "slack", account_id):
+            return {"error": f"Slack account '{account_id}' is not authorized"}
+
+        try:
+            provider = get_communication_provider("slack", account_id)
+            data = await provider.join_channel(channel_id)
+            channel = data.get("channel") or {}
+            return {
+                "account_id": account_id,
+                "channel": serialize_slack_channel(channel),
+                "already_in_channel": data.get("warning") == "already_in_channel",
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool()
+    async def search_slack_messages(
+        query: str,
+        account_id: str = "default",
+        count: int = 20,
+        page: int = 1,
+    ) -> dict[str, Any]:
+        """Search Slack messages visible to the authenticated app.
+
+        Args:
+            query: Slack search query
+            account_id: Slack credential account ID, usually "default"
+            count: Maximum messages to return
+            page: Search result page number
+
+        Returns:
+            Slack search results
+        """
+        if not is_account_authorized("communication", "slack", account_id):
+            return {"error": f"Slack account '{account_id}' is not authorized"}
+
+        try:
+            provider = get_communication_provider("slack", account_id)
+            data = await provider.search_messages(query, count=count, page=page)
+            messages_data = data.get("messages") or {}
+            matches = messages_data.get("matches", [])
+            messages = [serialize_slack_message(m) for m in matches]
+            return {
+                "account_id": account_id,
+                "query": query,
+                "count": len(messages),
+                "total": messages_data.get("total"),
+                "page": messages_data.get("page"),
+                "pages": messages_data.get("pagination", {}).get("page_count"),
+                "messages": messages,
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
     # --- Organization Tools ---
 
     @mcp.tool()
@@ -2901,11 +3252,13 @@ def create_mcp_server(
         email_accounts = get_email_accounts()
         calendar_accounts = get_calendar_accounts()
         task_accounts = get_task_accounts()
+        communication_accounts = get_communication_accounts()
 
         result: dict[str, Any] = {
             "email_accounts": [],
             "calendar_accounts": [],
             "task_accounts": [],
+            "communication_accounts": [],
         }
 
         for acc in email_accounts:
@@ -2929,6 +3282,17 @@ def create_mcp_server(
         for acc in task_accounts:
             authorized = is_account_authorized("task", acc["provider"], acc["account_id"])
             result["task_accounts"].append({
+                "account": acc["account_id"],
+                "provider": acc["provider"],
+                "organization": acc["organization"],
+                "authorized": authorized,
+            })
+
+        for acc in communication_accounts:
+            authorized = is_account_authorized(
+                "communication", acc["provider"], acc["account_id"]
+            )
+            result["communication_accounts"].append({
                 "account": acc["account_id"],
                 "provider": acc["provider"],
                 "organization": acc["organization"],
@@ -3463,6 +3827,155 @@ Keep it concise and actionable. Focus on what's most important for this specific
             "counts": briefing.get("summary"),
             "date": briefing.get("date"),
         }
+
+    # =========================================================================
+    # Email Forward Rules Tools
+    # =========================================================================
+
+    @mcp.tool()
+    async def get_email_forward_rules() -> dict[str, Any]:
+        """Get all configured email forward rules.
+
+        Shows rules that automatically forward emails based on sender,
+        subject, or other criteria.
+
+        Returns:
+            List of forward rules with their conditions and actions
+        """
+        from pathlib import Path
+
+        from executive_copilot.services.email_forward import EmailForwardService
+
+        service = EmailForwardService(
+            config=config,
+            credential_manager=credential_manager,
+            config_dir=Path("config"),
+        )
+
+        rules = service.get_rules()
+        enabled_count = sum(1 for r in rules if r["enabled"])
+
+        return {
+            "rules": rules,
+            "total": len(rules),
+            "enabled": enabled_count,
+        }
+
+    @mcp.tool()
+    async def test_email_forward_rules(hours_back: int = 24) -> dict[str, Any]:
+        """Test email forward rules against recent emails (dry run).
+
+        Checks which emails would be forwarded without actually forwarding them.
+        Useful for testing rules before enabling them.
+
+        Args:
+            hours_back: How many hours of emails to check (default 24)
+
+        Returns:
+            List of emails that would match rules
+        """
+        from pathlib import Path
+
+        from executive_copilot.services.email_forward import EmailForwardService
+
+        service = EmailForwardService(
+            config=config,
+            credential_manager=credential_manager,
+            config_dir=Path("config"),
+        )
+
+        return await service.test_rules(hours_back=hours_back)
+
+    @mcp.tool()
+    async def run_email_forward_now() -> dict[str, Any]:
+        """Run email forward rules immediately.
+
+        Processes unread emails and forwards those matching rules.
+        Normally runs automatically every 5 minutes.
+
+        Returns:
+            Statistics about forwarded emails
+        """
+        from pathlib import Path
+
+        from executive_copilot.services.email_forward import EmailForwardService
+
+        service = EmailForwardService(
+            config=config,
+            credential_manager=credential_manager,
+            config_dir=Path("config"),
+        )
+
+        return await service.process_new_emails(hours_back=1)
+
+    # --- Tech dashboard: weekly snapshots + HTML resource ---
+
+    @mcp.tool()
+    async def close_week(
+        clients: int,
+        roadmap: int,
+        done: int,
+        urgent: int = 0,
+        notes: str = "",
+        week: str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Close the week on the tech dashboard by saving a snapshot.
+
+        Persists the dashboard's headline metrics plus an executive note,
+        keyed by ISO week. The dashboard resource injects this history so
+        next week's view knows where this one ended. A week already closed
+        is not overwritten unless force=True.
+
+        Args:
+            clients: Clients currently in implementation
+            roadmap: Active roadmap items
+            done: Achievements/items completed
+            urgent: Urgent decisions pending (default: 0)
+            notes: One-line executive context for the week (e.g. "signed client X")
+            week: ISO week to close, e.g. "2026-W27" (default: current week)
+            force: Overwrite an already-closed week (default: False)
+
+        Returns:
+            The saved snapshot, or the existing one if the week was locked
+        """
+        from executive_copilot.services import week_history
+
+        return week_history.close_week(
+            clients=clients,
+            roadmap=roadmap,
+            done=done,
+            urgent=urgent,
+            notes=notes,
+            week=week,
+            force=force,
+        )
+
+    @mcp.tool()
+    async def get_week_history() -> dict[str, Any]:
+        """Get the tech dashboard's closed-week snapshots.
+
+        Returns every saved weekly snapshot (metrics + executive note),
+        newest last, plus the current ISO week key.
+
+        Returns:
+            Week history keyed by ISO week
+        """
+        from executive_copilot.services import week_history
+
+        history = week_history.load_history()
+        return {
+            "current_week": week_history.current_iso_week(),
+            "total": len(history),
+            "weeks": history,
+        }
+
+    @mcp.resource("resource://tech-dashboard", mime_type="text/html")
+    async def tech_dashboard() -> str:
+        """Tech dashboard ejecutivo de Paycode — roadmap, clientes e historial semanal."""
+        from executive_copilot.services import week_history
+
+        return week_history.render_dashboard_html()
 
     logger.info("MCP server configured with multi-account aggregation tools")
     return mcp

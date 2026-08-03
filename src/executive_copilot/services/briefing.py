@@ -1,7 +1,9 @@
 """Service for generating morning briefings."""
 
 import asyncio
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from executive_copilot.admin.credentials import CredentialManager
@@ -18,8 +20,29 @@ from executive_copilot.providers.calendar.google import GoogleCalendarProvider
 from executive_copilot.providers.calendar.outlook import OutlookCalendarProvider
 from executive_copilot.providers.email.gmail import GmailProvider
 from executive_copilot.providers.email.outlook import OutlookProvider
+from executive_copilot.providers.task.asana import AsanaProvider
 
 logger = get_logger(__name__)
+
+# Cache of the last generated briefing, shared across processes so the
+# admin dashboard can load instantly instead of hitting every provider.
+_BRIEFING_CACHE_PATH = Path(__file__).resolve().parents[3] / "briefing_cache.json"
+
+
+def save_briefing_cache(briefing: dict[str, Any]) -> None:
+    """Persist the last generated briefing to disk (best effort)."""
+    try:
+        _BRIEFING_CACHE_PATH.write_text(json.dumps(briefing, default=str))
+    except OSError as e:
+        logger.warning("Failed to write briefing cache", error=str(e))
+
+
+def load_briefing_cache() -> dict[str, Any] | None:
+    """Load the last generated briefing, or None if not available."""
+    try:
+        return json.loads(_BRIEFING_CACHE_PATH.read_text())  # type: ignore[no-any-return]
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 class BriefingService:
@@ -65,6 +88,23 @@ class BriefingService:
                         })
         return accounts
 
+    def _get_task_accounts(self) -> list[dict[str, str]]:
+        """Get all configured task accounts."""
+        accounts = []
+        seen = set()
+        for org in self.config.organizations:
+            for pa in org.provider_accounts:
+                if pa.provider_type == "task":
+                    key = (pa.account_id, pa.provider_name)
+                    if key not in seen:
+                        seen.add(key)
+                        accounts.append({
+                            "account_id": pa.account_id,
+                            "provider": pa.provider_name,
+                            "organization": org.name,
+                        })
+        return accounts
+
     def _is_authorized(
         self, provider_type: str, provider_name: str, account_id: str
     ) -> bool:
@@ -90,6 +130,12 @@ class BriefingService:
             return OutlookCalendarProvider(self.credential_manager, account_id)
         raise ValueError(f"Unknown calendar provider: {provider_name}")
 
+    def _get_task_provider(self, provider_name: str, account_id: str) -> AsanaProvider:
+        """Get task provider instance."""
+        if provider_name == "asana":
+            return AsanaProvider(self.credential_manager, account_id)
+        raise ValueError(f"Unknown task provider: {provider_name}")
+
     async def generate_briefing(
         self,
         include_emails: bool = True,
@@ -97,15 +143,17 @@ class BriefingService:
         include_tasks: bool = True,
         max_emails: int = 10,
         max_events: int = 15,
+        max_tasks: int = 15,
     ) -> dict[str, Any]:
         """Generate a comprehensive morning briefing.
 
         Args:
             include_emails: Include email summary
             include_calendar: Include today's events
-            include_tasks: Include overdue items and pending work
+            include_tasks: Include overdue items, pending work, and Asana tasks
             max_emails: Maximum urgent emails to include
             max_events: Maximum events to include
+            max_tasks: Maximum tasks to include
 
         Returns:
             Complete briefing data
@@ -117,6 +165,8 @@ class BriefingService:
             "summary": {},
             "calendar": None,
             "emails": None,
+            "emails_requiring_attention": None,
+            "tasks": None,
             "overdue": None,
             "pending_replies": None,
             "delegations": None,
@@ -124,21 +174,23 @@ class BriefingService:
             "errors": [],
         }
 
-        tasks = []
+        async_tasks = []
 
         if include_calendar:
-            tasks.append(self._get_calendar_briefing(max_events))
+            async_tasks.append(self._get_calendar_briefing(max_events))
 
         if include_emails:
-            tasks.append(self._get_email_briefing(max_emails))
+            async_tasks.append(self._get_email_briefing(max_emails))
+            async_tasks.append(self._get_emails_requiring_attention(max_emails))
 
         if include_tasks:
-            tasks.append(self._get_overdue_items())
-            tasks.append(self._get_pending_replies())
-            tasks.append(self._get_delegation_summary())
-            tasks.append(self._get_commitment_summary())
+            async_tasks.append(self._get_task_briefing(max_tasks))
+            async_tasks.append(self._get_overdue_items())
+            async_tasks.append(self._get_pending_replies())
+            async_tasks.append(self._get_delegation_summary())
+            async_tasks.append(self._get_commitment_summary())
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*async_tasks, return_exceptions=True)
 
         idx = 0
         if include_calendar:
@@ -155,7 +207,19 @@ class BriefingService:
                 briefing["emails"] = results[idx]
             idx += 1
 
+            if isinstance(results[idx], Exception):
+                briefing["errors"].append(f"Emails requiring attention: {results[idx]}")
+            else:
+                briefing["emails_requiring_attention"] = results[idx]
+            idx += 1
+
         if include_tasks:
+            if isinstance(results[idx], Exception):
+                briefing["errors"].append(f"Tasks: {results[idx]}")
+            else:
+                briefing["tasks"] = results[idx]
+            idx += 1
+
             if isinstance(results[idx], Exception):
                 briefing["errors"].append(f"Overdue: {results[idx]}")
             else:
@@ -181,6 +245,8 @@ class BriefingService:
 
         briefing["summary"] = self._build_summary(briefing)
         briefing["summary_text"] = self._build_summary_text(briefing["summary"])
+
+        save_briefing_cache(briefing)
 
         return briefing
 
@@ -259,7 +325,7 @@ class BriefingService:
                 total_unread += len(unread)
 
                 for email in unread[:max_emails]:
-                    is_urgent = self._is_urgent_email(email)
+                    is_urgent = self._is_urgent_email(email) and not self._is_promotional_email(email)
                     if is_urgent or len(urgent_emails) < max_emails:
                         urgent_emails.append({
                             "subject": email.subject,
@@ -299,6 +365,238 @@ class BriefingService:
         snippet = (email.snippet or "").lower()
 
         return any(keyword in subject or keyword in snippet for keyword in urgent_keywords)
+
+    _PROMOTIONAL_LABELS = frozenset({
+        "CATEGORY_PROMOTIONS",
+        "CATEGORY_SOCIAL",
+        "CATEGORY_FORUMS",
+    })
+
+    _PROMOTIONAL_SENDER_PREFIXES = (
+        "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply",
+        "newsletter", "newsletters", "marketing", "promo", "promociones",
+        "promotions", "offers", "ofertas", "deals", "notification",
+        "notifications", "notificaciones", "alerts", "avisos", "mailer",
+    )
+
+    _UNSUBSCRIBE_MARKERS = (
+        "unsubscribe",
+        "cancelar suscripción",
+        "cancelar suscripcion",
+        "darse de baja",
+        "date de baja",
+        "dejar de recibir",
+    )
+
+    def _is_promotional_email(self, email: Email) -> bool:
+        """Check if email is promotional/bulk noise that never needs a reply."""
+        for label in email.labels:
+            if (label.provider_id or label.name) in self._PROMOTIONAL_LABELS:
+                return True
+
+        local_part = email.sender.address.split("@")[0].lower()
+        if local_part.startswith(self._PROMOTIONAL_SENDER_PREFIXES):
+            return True
+
+        content = " ".join(
+            part.lower() for part in (email.snippet, email.body_text) if part
+        )
+        return any(marker in content for marker in self._UNSUBSCRIBE_MARKERS)
+
+    def _email_requires_attention(self, email: Email) -> tuple[bool, str | None]:
+        """Check if email requires attention/action.
+
+        Returns (requires_attention, reason).
+        """
+        subject = (email.subject or "").lower()
+        snippet = (email.snippet or "").lower()
+        combined = subject + " " + snippet
+
+        action_indicators = [
+            ("question", "contains a question"),
+            ("can you", "requests your action"),
+            ("could you", "requests your action"),
+            ("would you", "requests your action"),
+            ("please", "requests your action"),
+            ("need your", "needs your input"),
+            ("waiting for", "waiting for your response"),
+            ("following up", "follow-up message"),
+            ("remind", "reminder"),
+            ("approve", "needs approval"),
+            ("approval", "needs approval"),
+            ("review", "needs review"),
+            ("sign off", "needs sign-off"),
+            ("decision", "needs decision"),
+            ("feedback", "needs feedback"),
+            ("response", "awaiting response"),
+            ("reply", "awaiting reply"),
+            ("confirm", "needs confirmation"),
+            ("schedule", "scheduling request"),
+            ("meeting request", "meeting request"),
+            ("invitation", "invitation"),
+            ("action required", "action required"),
+            ("action needed", "action needed"),
+            ("your input", "needs your input"),
+            ("thoughts on", "requests your opinion"),
+            ("what do you think", "requests your opinion"),
+            ("?", "contains a question"),
+        ]
+
+        for indicator, reason in action_indicators:
+            if indicator in combined:
+                return True, reason
+
+        return False, None
+
+    async def _get_emails_requiring_attention(self, max_emails: int) -> dict[str, Any]:
+        """Get emails that require attention/follow-up."""
+        accounts = self._get_email_accounts()
+        attention_emails: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+
+        for acc in accounts:
+            if not self._is_authorized("email", acc["provider"], acc["account_id"]):
+                continue
+
+            try:
+                provider = self._get_email_provider(acc["provider"], acc["account_id"])
+                unread = await provider.get_unread(max_results=50)
+
+                for email in unread:
+                    if self._is_promotional_email(email):
+                        continue
+
+                    requires_attention, reason = self._email_requires_attention(email)
+                    is_urgent = self._is_urgent_email(email)
+
+                    if requires_attention or is_urgent:
+                        days_waiting = max(
+                            0, (datetime.now(UTC) - email.received_at).days
+                        )
+                        attention_emails.append({
+                            "subject": email.subject,
+                            "from": email.sender.address,
+                            "from_name": email.sender.display_name,
+                            "received_at": email.received_at.isoformat(),
+                            "days_waiting": days_waiting,
+                            "snippet": email.snippet,
+                            "thread_id": email.thread_id,
+                            "is_urgent": is_urgent,
+                            "requires_attention": requires_attention,
+                            "attention_reason": reason,
+                            "account": acc["account_id"],
+                            "organization": acc["organization"],
+                        })
+
+            except Exception as e:
+                errors.append({"account": acc["account_id"], "error": str(e)})
+
+        attention_emails.sort(
+            key=lambda x: (
+                not x["is_urgent"],
+                not x["requires_attention"],
+                x["received_at"],
+            ),
+        )
+        attention_emails = attention_emails[:max_emails]
+
+        return {
+            "total": len(attention_emails),
+            "urgent_count": sum(1 for e in attention_emails if e["is_urgent"]),
+            "action_needed_count": sum(1 for e in attention_emails if e["requires_attention"]),
+            "emails": attention_emails,
+            "errors": errors,
+        }
+
+    def _task_to_dict(
+        self, task: Any, acc: dict[str, str], is_overdue: bool
+    ) -> dict[str, Any]:
+        """Map a task to briefing dict with context on why it needs attention."""
+        now = datetime.now(UTC)
+        days_overdue = 0
+        if is_overdue and task.due_date:
+            days_overdue = max(0, (now - task.due_date).days)
+
+        description = (task.description or "").strip()
+        if len(description) > 300:
+            description = description[:300] + "…"
+
+        priority = task.priority.value if task.priority else None
+        reasons = []
+        if is_overdue:
+            if days_overdue >= 1:
+                reasons.append(
+                    f"overdue by {days_overdue} day{'s' if days_overdue != 1 else ''}"
+                )
+            else:
+                reasons.append("past due")
+        else:
+            reasons.append("due today")
+        if priority in ("high", "urgent", "critical"):
+            reasons.append(f"{priority} priority")
+        if task.is_blocked:
+            reasons.append("blocked")
+        if task.comment_count:
+            reasons.append(f"{task.comment_count} comments")
+
+        return {
+            "id": str(task.id),
+            "provider_id": task.provider_ref.external_id if task.provider_ref else None,
+            "title": task.title,
+            "description": description or None,
+            "due_date": task.due_date.isoformat() if task.due_date else None,
+            "days_overdue": days_overdue if is_overdue else 0,
+            "project_name": task.project_name,
+            "section_name": task.section_name,
+            "assignee_name": task.assignee_name,
+            "tags": list(task.tags or []),
+            "priority": priority,
+            "attention_reason": ", ".join(reasons),
+            "url": task.provider_ref.external_url if task.provider_ref else None,
+            "account": acc["account_id"],
+            "organization": acc["organization"],
+        }
+
+    async def _get_task_briefing(self, max_tasks: int) -> dict[str, Any]:
+        """Get tasks due today and overdue from task providers."""
+        accounts = self._get_task_accounts()
+        tasks_due_today: list[dict[str, Any]] = []
+        tasks_overdue: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        today = datetime.now(UTC).date()
+
+        for acc in accounts:
+            if not self._is_authorized("task", acc["provider"], acc["account_id"]):
+                continue
+
+            try:
+                provider = self._get_task_provider(acc["provider"], acc["account_id"])
+
+                overdue = await provider.get_overdue_tasks()
+                for task in overdue[:max_tasks]:
+                    tasks_overdue.append(self._task_to_dict(task, acc, is_overdue=True))
+
+                due_today = await provider.get_due_today()
+                for task in due_today[:max_tasks]:
+                    if task.due_date and task.due_date.date() == today:
+                        tasks_due_today.append(
+                            self._task_to_dict(task, acc, is_overdue=False)
+                        )
+
+            except Exception as e:
+                errors.append({"account": acc["account_id"], "error": str(e)})
+
+        tasks_overdue.sort(key=lambda x: x.get("due_date") or "")
+        tasks_due_today.sort(key=lambda x: x.get("due_date") or "")
+
+        return {
+            "due_today": tasks_due_today[:max_tasks],
+            "due_today_count": len(tasks_due_today),
+            "overdue": tasks_overdue[:max_tasks],
+            "overdue_count": len(tasks_overdue),
+            "total_attention_needed": len(tasks_due_today) + len(tasks_overdue),
+            "errors": errors,
+        }
 
     async def _get_overdue_items(self) -> dict[str, Any]:
         """Get all overdue items."""
@@ -437,6 +735,9 @@ class BriefingService:
             "meetings": 0,
             "unread_emails": 0,
             "urgent_emails": 0,
+            "emails_requiring_attention": 0,
+            "tasks_due_today": 0,
+            "tasks_overdue": 0,
             "overdue_items": 0,
             "pending_replies": 0,
             "waiting_on_others": 0,
@@ -449,6 +750,15 @@ class BriefingService:
         if briefing.get("emails"):
             summary["unread_emails"] = briefing["emails"].get("total_unread", 0)
             summary["urgent_emails"] = briefing["emails"].get("urgent_count", 0)
+
+        if briefing.get("emails_requiring_attention"):
+            summary["emails_requiring_attention"] = briefing["emails_requiring_attention"].get(
+                "action_needed_count", 0
+            )
+
+        if briefing.get("tasks"):
+            summary["tasks_due_today"] = briefing["tasks"].get("due_today_count", 0)
+            summary["tasks_overdue"] = briefing["tasks"].get("overdue_count", 0)
 
         if briefing.get("overdue"):
             summary["overdue_items"] = briefing["overdue"].get("total", 0)
@@ -475,19 +785,28 @@ class BriefingService:
         def pluralize(count: int, singular: str, plural: str) -> str:
             return f"{count} {plural if count != 1 else singular}"
 
-        if summary["meetings"] > 0:
+        if summary.get("meetings", 0) > 0:
             parts.append(pluralize(summary["meetings"], "meeting", "meetings"))
 
-        if summary["pending_replies"] > 0:
+        if summary.get("tasks_due_today", 0) > 0:
+            parts.append(pluralize(summary["tasks_due_today"], "task due today", "tasks due today"))
+
+        if summary.get("tasks_overdue", 0) > 0:
+            parts.append(pluralize(summary["tasks_overdue"], "overdue task", "overdue tasks"))
+
+        if summary.get("emails_requiring_attention", 0) > 0:
+            parts.append(pluralize(summary["emails_requiring_attention"], "email needing attention", "emails needing attention"))
+
+        if summary.get("pending_replies", 0) > 0:
             parts.append(pluralize(summary["pending_replies"], "pending reply", "pending replies"))
 
-        if summary["overdue_items"] > 0:
-            parts.append(pluralize(summary["overdue_items"], "overdue item", "overdue items"))
+        if summary.get("overdue_items", 0) > 0:
+            parts.append(pluralize(summary["overdue_items"], "overdue follow-up", "overdue follow-ups"))
 
-        if summary["urgent_emails"] > 0:
+        if summary.get("urgent_emails", 0) > 0:
             parts.append(pluralize(summary["urgent_emails"], "urgent email", "urgent emails"))
 
-        if summary["waiting_on_others"] > 0:
+        if summary.get("waiting_on_others", 0) > 0:
             n = summary["waiting_on_others"]
             parts.append(f"{n} {'item' if n == 1 else 'items'} waiting on others")
 
@@ -576,8 +895,56 @@ class BriefingService:
                 if event.get("location"):
                     lines.append(f"    Location: {event['location']}")
 
+        def format_task(task: dict[str, Any]) -> list[str]:
+            task_lines = []
+            project = f" [{task['project_name']}]" if task.get("project_name") else ""
+            due = f" (due {task['due_date'][:10]})" if task.get("due_date") else ""
+            task_lines.append(f"  {task['title']}{project}{due}")
+            if task.get("attention_reason"):
+                task_lines.append(f"    Why: {task['attention_reason']}")
+            if task.get("description"):
+                desc = task["description"].replace("\n", " ").strip()
+                if len(desc) > 150:
+                    desc = desc[:150] + "…"
+                task_lines.append(f"    Details: {desc}")
+            if task.get("assignee_name"):
+                task_lines.append(f"    Assignee: {task['assignee_name']}")
+            if task.get("url"):
+                task_lines.append(f"    {task['url']}")
+            return task_lines
+
+        if briefing.get("tasks"):
+            tasks = briefing["tasks"]
+            if tasks.get("overdue"):
+                lines.extend(["", "OVERDUE TASKS", "-" * 30])
+                for task in tasks["overdue"][:5]:
+                    lines.extend(format_task(task))
+
+            if tasks.get("due_today"):
+                lines.extend(["", "TASKS DUE TODAY", "-" * 30])
+                for task in tasks["due_today"][:5]:
+                    lines.extend(format_task(task))
+
+        if briefing.get("emails_requiring_attention"):
+            attention = briefing["emails_requiring_attention"]
+            if attention.get("emails"):
+                lines.extend(["", "EMAILS REQUIRING ATTENTION", "-" * 30])
+                for email in attention["emails"][:5]:
+                    sender = email.get("from_name") or email["from"]
+                    reason = f" ({email['attention_reason']})" if email.get("attention_reason") else ""
+                    urgent = " [URGENT]" if email.get("is_urgent") else ""
+                    lines.append(f"  From {sender}{urgent}: {email['subject']}{reason}")
+                    waiting = email.get("days_waiting", 0)
+                    if waiting >= 1:
+                        lines.append(f"    Waiting {waiting} day{'s' if waiting != 1 else ''} for your reply")
+                    if email.get("snippet"):
+                        snippet = email["snippet"].replace("\n", " ").strip()
+                        if len(snippet) > 150:
+                            snippet = snippet[:150] + "…"
+                        lines.append(f"    Preview: {snippet}")
+
         if briefing.get("overdue") and briefing["overdue"].get("total", 0) > 0:
-            lines.extend(["", "OVERDUE ITEMS", "-" * 30])
+            lines.extend(["", "OVERDUE FOLLOW-UPS & COMMITMENTS", "-" * 30])
             overdue = briefing["overdue"]
 
             for item in overdue.get("follow_ups", [])[:3]:

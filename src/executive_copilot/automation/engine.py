@@ -101,6 +101,10 @@ class AutomationEngine:
             id=config.job_name,
             name=config.job_name,
             replace_existing=True,
+            # If the machine was asleep at the scheduled time, still run the
+            # job when it wakes up within the next hour (instead of skipping).
+            misfire_grace_time=3600,
+            coalesce=True,
         )
 
         logger.info(

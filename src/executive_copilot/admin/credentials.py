@@ -251,6 +251,7 @@ class CredentialManager:
                         "has_client_secret": "client_secret" in cred,
                         "has_api_key": "api_key" in cred,
                         "has_access_token": "access_token" in cred,
+                        "has_refresh_token": "refresh_token" in cred,
                         "has_tenant_id": "tenant_id" in cred,
                     })
 

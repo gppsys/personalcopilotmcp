@@ -8,6 +8,7 @@ from uuid import uuid4
 import httpx
 
 from executive_copilot.admin.credentials import CredentialManager
+from executive_copilot.admin.oauth import OAuthManager
 from executive_copilot.logging import get_logger
 from executive_copilot.models.base import ProviderReference
 from executive_copilot.models.calendar import (
@@ -103,6 +104,53 @@ class OutlookCalendarProvider(CalendarProvider):
             "Prefer": 'outlook.timezone="UTC"',
         }
 
+    async def _refresh_access_token(self) -> bool:
+        """Refresh the cached access token if a refresh token is available."""
+        calendar_cred = self.credential_manager.get_credential(
+            "calendar", "outlook", self.account_id
+        )
+        email_cred = self.credential_manager.get_credential("email", "outlook", self.account_id)
+
+        source_cred = email_cred or calendar_cred
+        if (
+            not source_cred
+            or not source_cred.get("client_id")
+            or not source_cred.get("refresh_token")
+        ):
+            return False
+
+        oauth_manager = OAuthManager(self.credential_manager)
+        new_token = await oauth_manager.refresh_microsoft_token(
+            account_id=self.account_id,
+            client_id=source_cred["client_id"],
+            client_secret=source_cred.get("client_secret", ""),
+            tenant=source_cred.get("tenant_id", "common"),
+        )
+        if not new_token:
+            return False
+
+        refreshed_email_cred = self.credential_manager.get_credential(
+            "email", "outlook", self.account_id
+        )
+        new_refresh_token = (
+            refreshed_email_cred or source_cred
+        ).get("refresh_token", source_cred["refresh_token"])
+
+        self.credential_manager.save_credential(
+            provider_type="calendar",
+            provider_name="outlook",
+            account_id=self.account_id,
+            account_label=(calendar_cred or source_cred).get("account_label"),
+            client_id=source_cred.get("client_id"),
+            client_secret=source_cred.get("client_secret"),
+            tenant_id=source_cred.get("tenant_id"),
+            access_token=new_token,
+            refresh_token=new_refresh_token,
+        )
+
+        self._access_token = new_token
+        return True
+
     async def _api_get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         """Make GET request to Graph API."""
         async with httpx.AsyncClient() as client:
@@ -112,7 +160,14 @@ class OutlookCalendarProvider(CalendarProvider):
                 params=params,
             )
             if response.status_code == 401:
-                raise ValueError("Access token expired. Please re-authorize.")
+                if await self._refresh_access_token():
+                    response = await client.get(
+                        f"{GRAPH_API_BASE}{path}",
+                        headers=self._headers(),
+                        params=params,
+                    )
+                if response.status_code == 401:
+                    raise ValueError("Access token expired. Please re-authorize.")
             response.raise_for_status()
             result: dict[str, Any] = response.json()
             return result
@@ -126,7 +181,14 @@ class OutlookCalendarProvider(CalendarProvider):
                 json=data,
             )
             if response.status_code == 401:
-                raise ValueError("Access token expired. Please re-authorize.")
+                if await self._refresh_access_token():
+                    response = await client.post(
+                        f"{GRAPH_API_BASE}{path}",
+                        headers=self._headers(),
+                        json=data,
+                    )
+                if response.status_code == 401:
+                    raise ValueError("Access token expired. Please re-authorize.")
             response.raise_for_status()
             result: dict[str, Any] = response.json()
             return result
@@ -140,7 +202,14 @@ class OutlookCalendarProvider(CalendarProvider):
                 json=data,
             )
             if response.status_code == 401:
-                raise ValueError("Access token expired. Please re-authorize.")
+                if await self._refresh_access_token():
+                    response = await client.patch(
+                        f"{GRAPH_API_BASE}{path}",
+                        headers=self._headers(),
+                        json=data,
+                    )
+                if response.status_code == 401:
+                    raise ValueError("Access token expired. Please re-authorize.")
             response.raise_for_status()
             result: dict[str, Any] = response.json()
             return result
@@ -153,7 +222,13 @@ class OutlookCalendarProvider(CalendarProvider):
                 headers=self._headers(),
             )
             if response.status_code == 401:
-                raise ValueError("Access token expired. Please re-authorize.")
+                if await self._refresh_access_token():
+                    response = await client.delete(
+                        f"{GRAPH_API_BASE}{path}",
+                        headers=self._headers(),
+                    )
+                if response.status_code == 401:
+                    raise ValueError("Access token expired. Please re-authorize.")
             response.raise_for_status()
 
     # --- Calendar Management ---

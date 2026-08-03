@@ -477,6 +477,76 @@ class OutlookProvider:
                 result = response.json()
                 return result
 
+    async def mark_as_read(self, message_id: str) -> bool:
+        """Mark a message as read.
+
+        Args:
+            message_id: The message ID
+
+        Returns:
+            True if successful
+        """
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(
+                f"{GRAPH_API_BASE}/me/messages/{message_id}",
+                headers=self._headers(),
+                json={"isRead": True},
+            )
+
+            if response.status_code == 401:
+                if await self._refresh_access_token():
+                    response = await client.patch(
+                        f"{GRAPH_API_BASE}/me/messages/{message_id}",
+                        headers=self._headers(),
+                        json={"isRead": True},
+                    )
+                if response.status_code == 401:
+                    raise ValueError("Access token expired. Please re-authorize.")
+
+            response.raise_for_status()
+            return True
+
+    async def add_label(self, message_id: str, label_name: str) -> bool:
+        """Add a category to a message (Outlook uses categories instead of labels).
+
+        Args:
+            message_id: The message ID
+            label_name: Category name
+
+        Returns:
+            True if successful
+        """
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{GRAPH_API_BASE}/me/messages/{message_id}",
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+            current_categories = response.json().get("categories", [])
+
+            if label_name not in current_categories:
+                current_categories.append(label_name)
+
+                response = await client.patch(
+                    f"{GRAPH_API_BASE}/me/messages/{message_id}",
+                    headers=self._headers(),
+                    json={"categories": current_categories},
+                )
+
+                if response.status_code == 401:
+                    if await self._refresh_access_token():
+                        response = await client.patch(
+                            f"{GRAPH_API_BASE}/me/messages/{message_id}",
+                            headers=self._headers(),
+                            json={"categories": current_categories},
+                        )
+                    if response.status_code == 401:
+                        raise ValueError("Access token expired. Please re-authorize.")
+
+                response.raise_for_status()
+
+            return True
+
 
 async def test_outlook_connection(
     credential_manager: CredentialManager, account_id: str

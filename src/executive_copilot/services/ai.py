@@ -74,20 +74,25 @@ class AIService(Service):
         client = self._get_openai_client()
         responses_input = self._format_input(request.input)
 
+        create_kwargs: dict[str, Any] = {
+            "model": model,
+            "input": responses_input,
+            "instructions": request.instructions,
+            "max_output_tokens": request.max_output_tokens or config.max_output_tokens,
+            "temperature": (
+                request.temperature if request.temperature is not None else config.temperature
+            ),
+            "store": config.store,
+            "metadata": request.metadata or None,
+        }
+        # reasoning + text.verbosity are only accepted by GPT-5 / o-series
+        # reasoning models. Sending them to gpt-4o* returns a 400, so gate them.
+        if self._supports_reasoning(model):
+            create_kwargs["reasoning"] = {"effort": config.reasoning_effort.value}
+            create_kwargs["text"] = {"verbosity": config.text_verbosity.value}
+
         try:
-            response = await client.responses.create(
-                model=model,
-                input=responses_input,
-                instructions=request.instructions,
-                max_output_tokens=request.max_output_tokens or config.max_output_tokens,
-                temperature=(
-                    request.temperature if request.temperature is not None else config.temperature
-                ),
-                reasoning={"effort": config.reasoning_effort.value},
-                text={"verbosity": config.text_verbosity.value},
-                store=config.store,
-                metadata=request.metadata or None,
-            )
+            response = await client.responses.create(**create_kwargs)
         except Exception as exc:
             self._raise_provider_error(exc)
 
@@ -97,6 +102,12 @@ class AIService(Service):
             response_id=getattr(response, "id", None),
             usage=self._dump_usage(getattr(response, "usage", None)),
         )
+
+    @staticmethod
+    def _supports_reasoning(model: str) -> bool:
+        """Whether a model accepts the Responses `reasoning`/`text.verbosity` params."""
+        m = model.lower()
+        return m.startswith(("gpt-5", "o1", "o3", "o4"))
 
     def _get_openai_client(self) -> Any:
         """Create the OpenAI async client lazily."""

@@ -110,3 +110,8 @@ logs/
 # Claude Code local settings
 .claude/settings.local.json
 CLAUDE.md
+
+# Runtime artifacts (MCP activity monitor + dashboard cache)
+activity.db*
+briefing_cache.json
+dashboard_done_items.json

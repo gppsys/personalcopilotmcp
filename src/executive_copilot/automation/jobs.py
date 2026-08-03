@@ -271,11 +271,13 @@ class FollowUpDetectionJob(Job):
 
         days_back = self._settings.get("days_back", 7)
         min_wait_days = self._settings.get("min_wait_days", 2)
+        exclude_recipients = self._settings.get("exclude_recipients", [])
 
         self._logger.info(
             "Starting follow-up detection",
             days_back=days_back,
             min_wait_days=min_wait_days,
+            exclude_recipients=exclude_recipients,
         )
 
         service = PendingRepliesService(
@@ -284,7 +286,11 @@ class FollowUpDetectionJob(Job):
             db_manager=self._container.db_manager,
         )
 
-        stats = await service.sync(days_back=days_back, min_wait_days=min_wait_days)
+        stats = await service.sync(
+            days_back=days_back,
+            min_wait_days=min_wait_days,
+            exclude_recipients=exclude_recipients,
+        )
 
         return JobResult(
             job_name=self.name,
@@ -448,6 +454,48 @@ class DelegationDetectionJob(Job):
         )
 
 
+class EmailForwardJob(Job):
+    """Job for automatic email forwarding based on rules."""
+
+    async def execute(self) -> JobResult:
+        """Process new emails and apply forward rules."""
+        from pathlib import Path
+
+        from executive_copilot.services.email_forward import EmailForwardService
+
+        started_at = datetime.utcnow()
+
+        hours_back = self._settings.get("hours_back", 1)
+
+        self._logger.info("Starting email forward processing", hours_back=hours_back)
+
+        service = EmailForwardService(
+            config=self._container.config,
+            credential_manager=self._container.credential_manager,
+            config_dir=Path("config"),
+        )
+
+        stats = await service.process_new_emails(hours_back=hours_back)
+
+        status = JobStatus.COMPLETED
+        if stats.get("errors"):
+            self._logger.warning("Some emails failed to forward", errors=stats["errors"])
+
+        return JobResult(
+            job_name=self.name,
+            status=status,
+            started_at=started_at,
+            items_processed=stats.get("emails_forwarded", 0),
+            details={
+                "emails_checked": stats.get("emails_checked", 0),
+                "emails_matched": stats.get("emails_matched", 0),
+                "emails_forwarded": stats.get("emails_forwarded", 0),
+                "errors": stats.get("errors", []),
+                "forwarded_details": stats.get("forwarded_details", []),
+            },
+        )
+
+
 # Job registry
 JOB_TYPES: dict[str, type[Job]] = {
     "email_sync": EmailSyncJob,
@@ -460,4 +508,5 @@ JOB_TYPES: dict[str, type[Job]] = {
     "commitment_detection": CommitmentDetectionJob,
     "relationship_scan": RelationshipScanJob,
     "delegation_detection": DelegationDetectionJob,
+    "email_forward": EmailForwardJob,
 }

@@ -285,6 +285,44 @@ class AsanaProvider(TaskProvider):
     async def get_my_tasks(self, include_completed: bool = False) -> list[Task]:
         return await self.get_tasks(TaskQuery(include_completed=include_completed, limit=100))
 
+    async def get_completed_between(
+        self,
+        start: datetime,
+        end: datetime,
+        limit: int = 100,
+    ) -> list[Task]:
+        """Tasks completed in [start, end) across the whole workspace.
+
+        Uses Asana's search endpoint so results are filtered by completion date
+        server-side — avoiding the per-project 100-task truncation of listing.
+        """
+        workspace = await self._workspace_id()
+        params: dict[str, Any] = {
+            "completed": "true",
+            "completed_at.after": start.isoformat().replace("+00:00", "Z"),
+            "completed_at.before": end.isoformat().replace("+00:00", "Z"),
+            "opt_fields": TASK_OPT_FIELDS,
+            "sort_by": "completed_at",
+            "sort_ascending": "false",
+            "limit": min(limit, 100),
+        }
+        payload = await self._request(
+            "GET", f"/workspaces/{workspace}/tasks/search", params=params
+        )
+        data = payload.get("data", [])
+        if not isinstance(data, list):
+            return []
+        return [self._parse_task(task) for task in data if isinstance(task, dict)]
+
+    async def get_tasks_in_section(self, section_id: str, limit: int = 100) -> list[Task]:
+        """All tasks in a given section (used to surface blocked/paused work)."""
+        tasks = await self._get_all(
+            f"/sections/{section_id}/tasks",
+            params={"opt_fields": TASK_OPT_FIELDS},
+            limit=limit,
+        )
+        return [self._parse_task(task) for task in tasks]
+
     async def get_overdue_tasks(self) -> list[Task]:
         today_start = datetime.combine(date.today(), time.min, tzinfo=UTC)
         return await self.get_tasks(TaskQuery(due_before=today_start, limit=100))

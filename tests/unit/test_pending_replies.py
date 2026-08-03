@@ -76,6 +76,53 @@ class TestShouldProcessEmail:
         assert result is False
 
 
+class TestExcludedRecipients:
+    """Tests for the exclude_recipients setting (e.g. forwarding inboxes)."""
+
+    def _make_service(self, exclude: list[str]):
+        from executive_copilot.services.pending_replies import PendingRepliesService
+
+        service = PendingRepliesService.__new__(PendingRepliesService)
+        service._excluded_recipients = {r.lower() for r in exclude}
+        return service
+
+    def _threshold(self) -> datetime:
+        return datetime.now(UTC) - timedelta(days=2)
+
+    def test_skips_email_to_excluded_recipient(self):
+        """Forwards to an excluded inbox never require a follow-up."""
+        service = self._make_service(["invoicing@paycode.com.mx"])
+        email = TestShouldProcessEmail()._make_email(
+            days_ago=5, recipients=["invoicing@paycode.com.mx"]
+        )
+        assert service._should_process_email(email, self._threshold()) is False
+
+    def test_exclusion_is_case_insensitive(self):
+        """Recipient matching ignores case."""
+        service = self._make_service(["Invoicing@Paycode.com.MX"])
+        email = TestShouldProcessEmail()._make_email(
+            days_ago=5, recipients=["INVOICING@paycode.com.mx"]
+        )
+        assert service._should_process_email(email, self._threshold()) is False
+
+    def test_processes_email_with_other_recipients(self):
+        """If someone besides the excluded inbox is on the email, keep it."""
+        service = self._make_service(["invoicing@paycode.com.mx"])
+        email = TestShouldProcessEmail()._make_email(
+            days_ago=5,
+            recipients=["invoicing@paycode.com.mx", "client@example.com"],
+        )
+        assert service._should_process_email(email, self._threshold()) is True
+
+    def test_no_exclusions_processes_all(self):
+        """Without exclusions configured, behavior is unchanged."""
+        service = self._make_service([])
+        email = TestShouldProcessEmail()._make_email(
+            days_ago=5, recipients=["invoicing@paycode.com.mx"]
+        )
+        assert service._should_process_email(email, self._threshold()) is True
+
+
 class TestFollowUpCreation:
     """Tests for follow-up priority assignment."""
 

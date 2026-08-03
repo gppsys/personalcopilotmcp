@@ -19,6 +19,8 @@ logger = get_logger(__name__)
 class PendingRepliesService:
     """Scans sent emails and creates follow-ups for unanswered ones."""
 
+    _excluded_recipients: frozenset[str] = frozenset()
+
     def __init__(
         self,
         config: AppConfig,
@@ -28,6 +30,7 @@ class PendingRepliesService:
         self.config = config
         self.credential_manager = credential_manager
         self.db_manager = db_manager
+        self._excluded_recipients = frozenset()
 
     def _get_email_accounts(self) -> list[dict[str, str]]:
         """Get all configured email accounts."""
@@ -59,18 +62,32 @@ class PendingRepliesService:
         self,
         days_back: int = 7,
         min_wait_days: int = 2,
+        exclude_recipients: list[str] | None = None,
     ) -> dict[str, int]:
         """Scan sent emails and create follow-ups for unanswered ones.
 
         Args:
             days_back: How many days of sent emails to scan
             min_wait_days: Minimum days without reply before flagging
+            exclude_recipients: Email addresses that never require a reply
+                (e.g. forwarding inboxes like invoicing@); emails sent only
+                to these addresses are skipped
 
         Returns:
             Summary with counts of processed, created, and updated follow-ups
         """
+        self._excluded_recipients = frozenset(
+            r.lower() for r in (exclude_recipients or [])
+        )
         accounts = self._get_email_accounts()
-        stats = {"processed": 0, "created": 0, "updated": 0, "skipped": 0, "errors": 0}
+        stats = {
+            "processed": 0,
+            "created": 0,
+            "updated": 0,
+            "skipped": 0,
+            "resolved": 0,
+            "errors": 0,
+        }
 
         for acc in accounts:
             if not self._is_authorized(acc["provider"], acc["account_id"]):
@@ -96,7 +113,7 @@ class PendingRepliesService:
         min_wait_days: int,
     ) -> dict[str, int]:
         """Sync a single email account."""
-        stats = {"processed": 0, "created": 0, "updated": 0, "skipped": 0}
+        stats = {"processed": 0, "created": 0, "updated": 0, "skipped": 0, "resolved": 0}
         provider = self._get_provider(account["provider"], account["account_id"])
         account_id = account["account_id"]
 
@@ -140,9 +157,90 @@ class PendingRepliesService:
                         result=result,
                     )
 
+            # Second pass: auto-complete follow-ups whose thread has since
+            # received a reply. Without this, a follow-up created while the
+            # email was unanswered stays pending forever even after the
+            # reply arrives (each sent email is only processed once above).
+            resolved = await self._resolve_answered_follow_ups(
+                provider, repo, account_id
+            )
+            stats["resolved"] = stats.get("resolved", 0) + resolved
+
             await session.commit()
 
         return stats
+
+    async def _resolve_answered_follow_ups(
+        self,
+        provider: GmailProvider | OutlookProvider,
+        repo: FollowUpRepository,
+        account_id: str,
+    ) -> int:
+        """Auto-complete pending sent-email follow-ups that got a reply.
+
+        Returns the number of follow-ups completed.
+        """
+        pending = await repo.get_pending(limit=200, include_snoozed=True)
+        candidates = [
+            f
+            for f in pending
+            if f.auto_detected
+            and f.source_type == "sent_email"
+            and f.detected_from
+            and f.detected_from.startswith("[")
+        ]
+
+        resolved = 0
+        for follow_up in candidates:
+            external_id = follow_up.detected_from[1:].split("]", 1)[0].strip()
+            if not external_id:
+                continue
+
+            # The message may belong to another account; provider lookups
+            # for foreign IDs fail and we simply skip those here (they are
+            # handled when that account's sync runs).
+            try:
+                sent_email = await provider.get_message(external_id)
+            except Exception:
+                continue
+
+            thread_id: str | None = None
+            if sent_email.provider_ref:
+                thread_id = sent_email.provider_ref.thread_id
+                if not thread_id and sent_email.provider_ref.raw_data:
+                    thread_id = sent_email.provider_ref.raw_data.get("threadId")  # type: ignore[assignment]
+            if not thread_id:
+                continue
+
+            thread_emails = await self._get_thread_safe(provider, thread_id)
+            if thread_emails is None:
+                continue
+
+            has_reply = any(
+                e.received_at > sent_email.received_at
+                and e.sender.address.lower() != account_id.lower()
+                for e in thread_emails
+            )
+            if not has_reply:
+                continue
+
+            await repo.update_fields(
+                follow_up.id,
+                status=FollowUpStatus.COMPLETED.value,
+                completed_at=datetime.now(UTC),
+                notes=(
+                    (follow_up.notes + "\n" if follow_up.notes else "")
+                    + "Auto-completed: reply detected in thread."
+                ),
+            )
+            resolved += 1
+            logger.info(
+                "Auto-completed follow-up (reply received)",
+                title=follow_up.title[:60],
+                account=account_id,
+            )
+
+        return resolved
 
     async def _fetch_sent_emails(
         self,
@@ -211,7 +309,15 @@ class PendingRepliesService:
         """Check if email should be processed for follow-up."""
         if sent_email.received_at > min_wait_threshold:
             return False
-        return bool(sent_email.to_recipients)
+        if not sent_email.to_recipients:
+            return False
+        return not (
+            self._excluded_recipients
+            and all(
+                r.address.lower() in self._excluded_recipients
+                for r in sent_email.to_recipients
+            )
+        )
 
     async def _get_thread_safe(self, provider: GmailProvider | OutlookProvider, thread_id: str) -> list[Email] | None:
         """Get thread emails, returning None on error."""

@@ -37,7 +37,7 @@ automation_jobs:
   schedule: 0 7 * * *
   settings:
     send_email: true
-    to_email: null  # null = send to self
+    to_email: null
 - job_name: follow_up_detection
   job_type: follow_up_detection
   enabled: true
@@ -45,6 +45,8 @@ automation_jobs:
   settings:
     days_back: 7
     min_wait_days: 2
+    exclude_recipients:
+    - invoicing@paycode.com.mx
 - job_name: transcript_scan
   job_type: transcript_scan
   enabled: true
@@ -72,3 +74,9 @@ automation_jobs:
   settings:
     days_back: 7
     use_ai: true
+- job_name: email_forward
+  job_type: email_forward
+  enabled: true
+  schedule: '*/5 * * * *'
+  settings:
+    hours_back: 1

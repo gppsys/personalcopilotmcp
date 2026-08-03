@@ -13,7 +13,7 @@ from executive_copilot.admin.credentials import CredentialManager
 from executive_copilot.admin.oauth import OAuthManager
 from executive_copilot.logging import get_logger
 from executive_copilot.models.base import ProviderReference
-from executive_copilot.models.email import Email, EmailAddress, EmailPriority
+from executive_copilot.models.email import Email, EmailAddress, EmailLabel, EmailPriority
 
 logger = get_logger(__name__)
 
@@ -247,7 +247,10 @@ class GmailProvider:
             is_sent=is_sent,
             has_attachments=has_attachments,
             priority=EmailPriority.NORMAL,
-            labels=[],
+            labels=[
+                EmailLabel(name=label_id, provider_id=label_id, is_system=label_id.isupper())
+                for label_id in label_ids
+            ],
             provider_ref=ProviderReference(
                 provider_name="gmail",
                 external_id=data["id"],
@@ -490,6 +493,89 @@ class GmailProvider:
             response.raise_for_status()
             result: dict[str, Any] = response.json()
             return result
+
+    async def mark_as_read(self, message_id: str) -> bool:
+        """Mark a message as read.
+
+        Args:
+            message_id: The message ID
+
+        Returns:
+            True if successful
+        """
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{GMAIL_API_BASE}/users/me/messages/{message_id}/modify",
+                headers=self._headers(),
+                json={"removeLabelIds": ["UNREAD"]},
+            )
+
+            if response.status_code == 401:
+                if await self._refresh_access_token():
+                    response = await client.post(
+                        f"{GMAIL_API_BASE}/users/me/messages/{message_id}/modify",
+                        headers=self._headers(),
+                        json={"removeLabelIds": ["UNREAD"]},
+                    )
+                if response.status_code == 401:
+                    raise ValueError("Access token expired. Please re-authorize.")
+
+            response.raise_for_status()
+            return True
+
+    async def add_label(self, message_id: str, label_name: str) -> bool:
+        """Add a label to a message. Creates the label if it doesn't exist.
+
+        Args:
+            message_id: The message ID
+            label_name: Label name (can be nested like "forwarded/accounting")
+
+        Returns:
+            True if successful
+        """
+        label_id = await self._get_or_create_label(label_name)
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{GMAIL_API_BASE}/users/me/messages/{message_id}/modify",
+                headers=self._headers(),
+                json={"addLabelIds": [label_id]},
+            )
+
+            if response.status_code == 401:
+                if await self._refresh_access_token():
+                    response = await client.post(
+                        f"{GMAIL_API_BASE}/users/me/messages/{message_id}/modify",
+                        headers=self._headers(),
+                        json={"addLabelIds": [label_id]},
+                    )
+                if response.status_code == 401:
+                    raise ValueError("Access token expired. Please re-authorize.")
+
+            response.raise_for_status()
+            return True
+
+    async def _get_or_create_label(self, label_name: str) -> str:
+        """Get label ID, creating it if it doesn't exist."""
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{GMAIL_API_BASE}/users/me/labels",
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+            labels = response.json().get("labels", [])
+
+            for label in labels:
+                if label.get("name", "").lower() == label_name.lower():
+                    return str(label["id"])
+
+            response = await client.post(
+                f"{GMAIL_API_BASE}/users/me/labels",
+                headers=self._headers(),
+                json={"name": label_name},
+            )
+            response.raise_for_status()
+            return str(response.json()["id"])
 
 
 async def test_gmail_connection(
