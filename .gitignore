@@ -113,6 +113,7 @@ CLAUDE.md
 
 # Runtime artifacts (MCP activity monitor + dashboard cache)
 activity.db*
+vault_index.db*
 briefing_cache.json
 dashboard_done_items.json
 tech_dashboard.html

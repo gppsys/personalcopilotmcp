@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from executive_copilot.logging import get_logger
 from executive_copilot.services.accounts import AccountsService
+from executive_copilot.services.status import StatusService
 from executive_copilot.services.workspace import WorkspaceService
 
 if TYPE_CHECKING:
@@ -324,6 +326,28 @@ def create_workspace_router(config_dir: Path, credential_manager: CredentialMana
             return accounts().remove(payload.kind, payload.account_id)
         except ValueError as e:
             raise bad_request(e) from e
+
+    # --- status console -----------------------------------------------------
+
+    def status() -> StatusService:
+        from executive_copilot.config import load_config
+
+        return StatusService(load_config(config_dir), credential_manager)
+
+    @router.get("/status")
+    async def status_snapshot() -> dict[str, Any]:
+        snapshot = status().snapshot()
+        snapshot["checks"] = state.get("checks", {})
+        return snapshot
+
+    @router.post("/status/checks")
+    async def status_checks(force: bool = False) -> dict[str, Any]:
+        """Live API checks per account; cached a minute so refreshes stay cheap."""
+        cached_at = state.get("checks_at", 0.0)
+        if force or time.monotonic() - cached_at > 60:
+            state["checks"] = await status().probe()
+            state["checks_at"] = time.monotonic()
+        return {"checks": state["checks"]}
 
     # --- calendar settings --------------------------------------------------
 

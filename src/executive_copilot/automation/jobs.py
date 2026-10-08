@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -44,6 +44,9 @@ class Job(ABC):
     Jobs are scheduled tasks that run periodically to synchronize
     data, generate reports, or perform maintenance.
     """
+
+    # Not implemented yet: the status page shows these apart from real jobs.
+    placeholder: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -107,22 +110,35 @@ class Job(ABC):
                 items=result.items_processed,
                 duration=result.duration_seconds,
             )
-            return result
 
         except Exception as e:
             self._logger.error("Job failed", job=self.name, error=str(e))
-            return JobResult(
+            result = JobResult(
                 job_name=self.name,
                 status=JobStatus.FAILED,
                 started_at=started_at,
                 completed_at=datetime.utcnow(),
                 duration_seconds=(datetime.utcnow() - started_at).total_seconds(),
-                error_message=str(e),
+                error_message=str(e) or type(e).__name__,
             )
+
+        self._record(result)
+        return result
+
+    def _record(self, result: JobResult) -> None:
+        """Persist the run for the status page; never fail the job over it."""
+        from executive_copilot.automation.run_log import get_run_log
+
+        try:
+            get_run_log().record(result)
+        except Exception as e:
+            self._logger.warning("Could not record job run", error=str(e))
 
 
 class EmailSyncJob(Job):
     """Job for synchronizing emails from providers."""
+
+    placeholder = True
 
     async def execute(self) -> JobResult:
         """Sync emails from all providers."""
@@ -150,6 +166,8 @@ class EmailSyncJob(Job):
 class CalendarSyncJob(Job):
     """Job for synchronizing calendar events."""
 
+    placeholder = True
+
     async def execute(self) -> JobResult:
         """Sync calendar events from all providers."""
         started_at = datetime.utcnow()
@@ -168,6 +186,8 @@ class CalendarSyncJob(Job):
 class TaskSyncJob(Job):
     """Job for synchronizing tasks."""
 
+    placeholder = True
+
     async def execute(self) -> JobResult:
         """Sync tasks from all providers."""
         started_at = datetime.utcnow()
@@ -185,6 +205,8 @@ class TaskSyncJob(Job):
 
 class NewsSyncJob(Job):
     """Job for fetching news articles."""
+
+    placeholder = True
 
     async def execute(self) -> JobResult:
         """Fetch news from configured sources."""
