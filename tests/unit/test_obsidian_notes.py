@@ -1,12 +1,15 @@
 """Tests for the Obsidian meeting-notes helpers."""
 
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
+import httpx
 import pytest
 
+from executive_copilot.providers.calendar import google as google_calendar
+from executive_copilot.providers.calendar.google import drive_unavailable_reason
 from executive_copilot.services.obsidian_notes import (
     MeetingNotesSyncService,
     MeetingNotesVault,
@@ -22,10 +25,12 @@ from executive_copilot.services.obsidian_notes import (
     insert_section,
     match_people,
     new_note_text,
+    notes_text,
     parse_ai_json,
     parse_gemini_text,
     render_section,
     resolve_note_name,
+    strip_transcript,
 )
 
 NOTE = """# Josue / Gonzalo (1:1 técnico)
@@ -258,3 +263,133 @@ async def test_sync_without_drive_still_uses_gemini_emails(tmp_path: Path) -> No
     assert "error" not in result
     assert [w["note"] for w in result["written"]] == ["Weekly"]
     assert has_section((tmp_path / "Reuniones" / "Weekly.md").read_text(encoding="utf-8"), date(2026, 10, 6))
+
+
+def _doc(file_id: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        file_id=file_id,
+        mime_type="application/vnd.google-apps.document",
+        file_url=f"https://docs.google.com/document/d/{file_id}",
+    )
+
+
+class FakeCalendar:
+    """Stands in for GoogleCalendarProvider in ``_from_calendar``."""
+
+    contents: ClassVar[dict[str, str | None]] = {}
+    unavailable_on: ClassVar[str | None] = None
+
+    def __init__(self, *args: Any) -> None:
+        self.drive_unavailable: str | None = None
+
+    async def get_events(self, query: Any) -> tuple[list[Any], None]:
+        event = SimpleNamespace(
+            title="Weekly",
+            start_time=datetime(2026, 10, 6, 17, 0, tzinfo=UTC),
+            attendees=[],
+            transcript_attachments=[_doc(k) for k in self.contents],
+        )
+        return [event], None
+
+    async def get_attachment_content(self, file_id: str) -> str | None:
+        if file_id == self.unavailable_on:
+            self.drive_unavailable = "missing scope"
+        return self.contents[file_id]
+
+
+@pytest.mark.asyncio
+async def test_calendar_skips_unshared_doc_and_keeps_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    FakeCalendar.contents = {"private": None, "shared": "Resumen\n- notas"}
+    FakeCalendar.unavailable_on = None
+    monkeypatch.setattr(google_calendar, "GoogleCalendarProvider", FakeCalendar)
+
+    sources = await _service(tmp_path)._from_calendar(days_back=3)
+    assert [s.key for s in sources] == ["shared"]
+    assert sources[0].day == date(2026, 10, 6)
+
+
+@pytest.mark.asyncio
+async def test_calendar_stops_when_drive_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    FakeCalendar.contents = {"first": None, "second": "never read"}
+    FakeCalendar.unavailable_on = "first"
+    monkeypatch.setattr(google_calendar, "GoogleCalendarProvider", FakeCalendar)
+
+    with pytest.raises(RuntimeError, match="missing scope"):
+        await _service(tmp_path)._from_calendar(days_back=3)
+
+
+def test_drive_unavailable_reason() -> None:
+    scope = httpx.Response(403, text='{"error": {"details": [{"reason": "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}}')
+    disabled = httpx.Response(403, text='{"error": {"details": [{"reason": "SERVICE_DISABLED"}]}}')
+    not_shared = httpx.Response(403, text='{"error": {"errors": [{"reason": "forbidden"}]}}')
+    missing = httpx.Response(404, text="{}")
+
+    assert "drive.readonly" in (drive_unavailable_reason(scope) or "")
+    assert "disabled" in (drive_unavailable_reason(disabled) or "")
+    assert drive_unavailable_reason(not_shared) is None
+    assert drive_unavailable_reason(missing) is None
+
+
+def test_strip_transcript_keeps_notes_only() -> None:
+    doc = (
+        "📝 Las notas\nago 24, 2026\nRegistros de la reunión Transcripción\n\n"
+        "Resumen\nSe acordó X.\n\nDetalles\nMás contexto.\n\n"
+        "📖 Transcripción\nago 24, 2026\nGonzalo P: Hola.\n"
+    )
+    stripped = strip_transcript(doc)
+    assert stripped.endswith("Más contexto.")
+    assert "Gonzalo P: Hola" not in stripped
+    assert "Registros de la reunión Transcripción" in stripped
+    assert strip_transcript("Summary\nx\n\nTranscript\nA: hi") == "Summary\nx"
+    assert strip_transcript("Resumen\nsin transcripción") == "Resumen\nsin transcripción"
+
+
+def test_notes_text_by_doc_kind() -> None:
+    gemini = "📝 Las notas\nResumen\nSe acordó X.\n\n📖 Transcripción\nA: hola\n"
+    assert notes_text(gemini) == "📝 Las notas\nResumen\nSe acordó X."
+
+    transcript_only = "Reunión | A <> B\nAsistentes\nA, B\nTranscripción\nA: hola\nB: hola\n"
+    assert notes_text(transcript_only) == transcript_only
+
+    no_summary = "📝 Las notas\nResumen\nNo se generó ningún resumen para esta reunión porque no hubo suficiente conversación.\n"
+    assert notes_text(no_summary) is None
+
+
+@pytest.mark.asyncio
+async def test_sync_skips_empty_summaries(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    async def nothing(days_back: int) -> list[Any]:
+        return []
+
+    async def emails(days_back: int) -> list[MeetingSource]:
+        return [MeetingSource(key="1", source="gemini_email", title="Weekly", day=date(2026, 10, 6), text="")]
+
+    service._from_calendar = nothing  # type: ignore[method-assign]
+    service._from_gmail = emails  # type: ignore[method-assign]
+
+    result = await service.sync(days_back=3)
+    assert result["written"] == []
+    assert result["skipped"][0]["reason"] == "empty summary"
+    assert not (tmp_path / "Reuniones" / "Weekly.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_attachment_timeout_skips_only_that_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow export", request=request)
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        google_calendar.httpx, "AsyncClient",
+        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
+    )
+    creds = SimpleNamespace(get_credential=lambda *_args: {"access_token": "t"})
+    provider = google_calendar.GoogleCalendarProvider(creds, "me@example.com")  # type: ignore[arg-type]
+
+    assert await provider.get_attachment_content("doc") is None
+    assert provider.drive_unavailable is None

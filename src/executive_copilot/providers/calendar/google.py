@@ -33,6 +33,7 @@ from executive_copilot.providers.calendar.interface import (
 logger = get_logger(__name__)
 
 CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3"
+DRIVE_EXPORT_TIMEOUT = httpx.Timeout(10.0, read=60.0)
 
 
 class GoogleCalendarProvider(CalendarProvider):
@@ -42,6 +43,9 @@ class GoogleCalendarProvider(CalendarProvider):
         self.credential_manager = credential_manager
         self.account_id = account_id
         self._access_token: str | None = None
+        # Set when Drive cannot be used at all (missing scope, API disabled),
+        # as opposed to one file not being shared with the account.
+        self.drive_unavailable: str | None = None
 
     @property
     def provider_name(self) -> str:
@@ -753,30 +757,54 @@ class GoogleCalendarProvider(CalendarProvider):
         """
         drive_api = "https://www.googleapis.com/drive/v3"
 
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{drive_api}/files/{file_id}/export",
-                headers=self._headers(),
-                params={"mimeType": "text/plain"},
-            )
+        # Exporting a long Doc (notes + transcript) easily takes over httpx's 5s default.
+        async with httpx.AsyncClient(timeout=DRIVE_EXPORT_TIMEOUT) as client:
+            try:
+                response = await client.get(
+                    f"{drive_api}/files/{file_id}/export",
+                    headers=self._headers(),
+                    params={"mimeType": "text/plain"},
+                )
 
-            if response.status_code == 401:
-                if await self._refresh_access_token():
-                    response = await client.get(
-                        f"{drive_api}/files/{file_id}/export",
-                        headers=self._headers(),
-                        params={"mimeType": "text/plain"},
-                    )
+                if response.status_code == 401:
+                    if await self._refresh_access_token():
+                        response = await client.get(
+                            f"{drive_api}/files/{file_id}/export",
+                            headers=self._headers(),
+                            params={"mimeType": "text/plain"},
+                        )
+            except httpx.TimeoutException:
+                logger.warning("Timed out fetching attachment", file_id=file_id)
+                return None
 
             if response.status_code == 200:
                 return response.text
 
+            reason = drive_unavailable_reason(response)
+            if reason:
+                self.drive_unavailable = reason
             logger.warning(
                 "Failed to fetch attachment",
                 file_id=file_id,
                 status=response.status_code,
+                reason=reason,
             )
             return None
+
+
+def drive_unavailable_reason(response: httpx.Response) -> str | None:
+    """Why Drive is unusable for every file, or None when only this file failed."""
+    if response.status_code != 403:
+        return None
+    body = response.text
+    if "ACCESS_TOKEN_SCOPE_INSUFFICIENT" in body or "insufficientPermissions" in body:
+        return (
+            "the Google token lacks the drive.readonly scope: reconnect the account "
+            "from the workspace (Cuentas) to grant Drive access"
+        )
+    if "SERVICE_DISABLED" in body or "accessNotConfigured" in body:
+        return "the Google Drive API is disabled in the OAuth app's Google Cloud project"
+    return None
 
 
 async def test_google_calendar_connection(

@@ -20,7 +20,8 @@ logger = get_logger(__name__)
 
 GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1"
 RATE_LIMIT_REASONS = ("rateLimitExceeded", "userRateLimitExceeded", "RATE_LIMIT_EXCEEDED")
-RETRY_DELAYS = (1.0, 3.0, 8.0)
+# Gmail quotas are per minute: the last wait must outlast the window.
+RETRY_DELAYS = (2.0, 10.0, 30.0)
 
 
 def is_rate_limited(response: httpx.Response) -> bool:

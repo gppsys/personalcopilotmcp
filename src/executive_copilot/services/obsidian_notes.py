@@ -47,6 +47,9 @@ Devuelve SOLO un objeto JSON con estas claves:
 - "proximos_pasos": acciones con responsable, formato "Persona hace X" (puede ser []).
 - "personas": nombres completos de las personas que participaron o se mencionan.
 
+Usa solo lo que dicen las notas. Si no hay contenido sustantivo (solo
+asistentes o saludos), devuelve listas vacías: no inventes temas.
+
 Notas:
 {text}
 """
@@ -353,6 +356,37 @@ def parse_gemini_text(text: str) -> MeetingSummary:
     return MeetingSummary(bullets=bullets, next_steps=steps)
 
 
+TRANSCRIPT_HEADING = re.compile(r"^\W*(transcripci[oó]n|transcript)\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def strip_transcript(text: str) -> str:
+    """Drop the verbatim transcript tab of a Gemini notes Doc.
+
+    The notes (summary, decisions, next steps, details) come first; the
+    transcript is usually ~80% of the export and adds nothing to the summary.
+    """
+    match = TRANSCRIPT_HEADING.search(text)
+    return text[: match.start()].rstrip() if match else text
+
+
+NO_SUMMARY = re.compile(r"(?i)no se gener[oó] ning[uú]n resumen|no summary was generated")
+
+
+def notes_text(content: str) -> str | None:
+    """Text to summarize from a Gemini Doc export, or None when there is nothing to keep.
+
+    - Gemini notes Doc: the notes, without the verbatim transcript.
+    - Transcript-only Doc (no "Resumen"/"Summary" section): the transcript.
+    - Gemini said it could not summarize (too little conversation): None.
+    """
+    if NO_SUMMARY.search(content):
+        return None
+    notes = strip_transcript(content)
+    if any(normalize(line) in SUMMARY_HEADINGS for line in notes.splitlines()):
+        return notes
+    return content
+
+
 def parse_ai_json(text: str) -> Any:
     """Parse JSON from a model reply, tolerating ``` fences and prose around it."""
     cleaned = text.strip()
@@ -589,6 +623,10 @@ class MeetingNotesSyncService:
                 result["errors"].append({"title": src.title, "error": str(e)})
                 continue
 
+            if not (summary.bullets or summary.decisions or summary.next_steps):
+                result["skipped"].append({"title": src.title, "note": name, "date": src.day.isoformat(), "reason": "empty summary"})
+                continue
+
             people = match_people(summary.people + src.attendees, people_notes)
             section = render_section(src.day, summary, src.url)
             entry = {"title": src.title, "note": name, "date": src.day.isoformat(), "source": src.source, "people": people}
@@ -628,7 +666,7 @@ class MeetingNotesSyncService:
             try:
                 sources.extend(await fetch(days_back))
             except Exception as e:
-                errors.append({"source": label, "error": str(e)})
+                errors.append({"source": label, "error": str(e) or type(e).__name__})
         return sources, errors
 
     async def _from_calendar(self, days_back: int) -> list[MeetingSource]:
@@ -641,33 +679,35 @@ class MeetingNotesSyncService:
             EventQuery(start_time=now - timedelta(days=days_back), end_time=now, limit=250)
         )
         out: list[MeetingSource] = []
-        drive_denied = False
         for event in events:
             for att in event.transcript_attachments:
-                if drive_denied:
+                if provider.drive_unavailable:
                     break
                 if att.mime_type and att.mime_type != "application/vnd.google-apps.document":
                     continue  # recordings etc. cannot be exported as text
                 content = await provider.get_attachment_content(att.file_id)
                 if content is None:
-                    # Usually a missing Drive scope: stop hammering, fall back to e-mail.
-                    drive_denied = True
-                    break
+                    # Not shared with this account: the Gemini e-mail may still cover it.
+                    continue
+                text = notes_text(content)
+                if text is None:
+                    continue  # Gemini produced no summary: nothing worth a section
                 out.append(MeetingSource(
                     key=att.file_id,
                     source="calendar_attachment",
                     title=event.title,
                     day=event.start_time.astimezone(self.tz).date(),
-                    text=content,
+                    text=text,
                     url=att.file_url,
                     attendees=[
                         a.display_name or a.email for a in getattr(event, "attendees", []) or []
                     ],
                 ))
-        if drive_denied and not out:
+        if provider.drive_unavailable:
+            # Stop hammering Drive and fall back to the Gemini e-mails.
             raise RuntimeError(
-                "Could not read Gemini notes from Google Drive (the Google OAuth app "
-                "lacks the drive.readonly scope); using Gemini e-mails instead"
+                f"Could not read Gemini notes from Google Drive ({provider.drive_unavailable}); "
+                "using Gemini e-mails instead"
             )
         return out
 
