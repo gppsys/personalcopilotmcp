@@ -86,4 +86,6 @@ automation_jobs:
   schedule: 30 13,19 * * 1-5
   settings:
     days_back: 3
+    catch_up: true      # widen the window back to the newest meeting already in the vault
+    max_days_back: 60
     use_ai: true

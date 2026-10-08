@@ -181,6 +181,18 @@ def resolve_note_name(
     return safe_note_name(clean_meeting_title(title)), False
 
 
+def catch_up_days(latest: date | None, today: date, minimum: int, maximum: int = 60) -> int:
+    """Days to look back so nothing is missed since the newest synced meeting.
+
+    Never less than ``minimum`` (the normal window) and never more than
+    ``maximum`` (Gemini e-mails / API cost). One extra day covers a meeting
+    that was synced only partially on its last day.
+    """
+    if latest is None:
+        return minimum
+    return max(minimum, min(maximum, (today - latest).days + 1))
+
+
 def has_section(note_text: str, day: date) -> bool:
     """Whether the note already has a section for this date."""
     return day.isoformat() in DATE_HEADING.findall(note_text)
@@ -414,6 +426,11 @@ class MeetingNotesVault:
         partial = [n for n in names if norm and norm in normalize(n)]
         return partial[0] if partial else None
 
+    def latest_date(self) -> date | None:
+        """Newest ``## YYYY-MM-DD`` section across all meeting notes."""
+        dates = [d for name in self.note_names() for d in DATE_HEADING.findall(self.read(name) or "")]
+        return date.fromisoformat(max(dates)) if dates else None
+
     def list_notes(self) -> list[dict[str, Any]]:
         notes = []
         for name in self.note_names():
@@ -481,6 +498,8 @@ def _split_sections(text: str) -> list[tuple[str | None, str]]:
 class MeetingNotesSyncService:
     """Collect Gemini meeting notes and write them into the Obsidian vault."""
 
+    SOURCES = ("calendar_attachment", "gemini_email")
+
     def __init__(
         self,
         config: Any,
@@ -513,6 +532,13 @@ class MeetingNotesSyncService:
             raise ValueError(error or "Obsidian vault not configured")
         return self.vault
 
+    def catch_up_days_back(self, minimum: int, maximum: int = 60) -> int:
+        """``days_back`` that reaches back to the newest meeting already in the vault."""
+        if self.vault is None or self.vault_error():
+            return minimum
+        today = datetime.now(self.tz).date()
+        return catch_up_days(self.vault.latest_date(), today, minimum, maximum)
+
     async def sync(self, days_back: int = 7, dry_run: bool = False) -> dict[str, Any]:
         """Write new meeting sections for the last ``days_back`` days."""
         error = self.vault_error()
@@ -523,6 +549,10 @@ class MeetingNotesSyncService:
         assert self.vault is not None
 
         sources, source_errors = await self.collect_sources(days_back)
+        if not sources and len(source_errors) == len(self.SOURCES):
+            # Both sources failed: report it instead of a quiet "nothing new".
+            details = "; ".join(f"{e['source']}: {e['error'][:200]}" for e in source_errors)
+            return {"error": f"Could not read any Gemini notes source ({details})", "errors": source_errors}
         existing = self.vault.note_names()
         people_notes = self.vault.people_names()
         skip = [re.compile(p) for p in self.config.obsidian.skip_titles]
@@ -593,10 +623,8 @@ class MeetingNotesSyncService:
         """Gather Gemini notes from calendar attachments and Gemini e-mails."""
         sources: list[MeetingSource] = []
         errors: list[dict[str, str]] = []
-        for label, fetch in (
-            ("calendar_attachment", self._from_calendar),
-            ("gemini_email", self._from_gmail),
-        ):
+        for label in self.SOURCES:
+            fetch = self._from_calendar if label == "calendar_attachment" else self._from_gmail
             try:
                 sources.extend(await fetch(days_back))
             except Exception as e:

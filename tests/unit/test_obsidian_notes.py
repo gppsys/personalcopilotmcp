@@ -2,11 +2,18 @@
 
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
 
 from executive_copilot.services.obsidian_notes import (
+    MeetingNotesSyncService,
     MeetingNotesVault,
+    MeetingSource,
     MeetingSummary,
     add_to_index,
+    catch_up_days,
     clean_meeting_title,
     ensure_people_links,
     gemini_title_from_subject,
@@ -177,3 +184,77 @@ def test_vault_search_and_find(tmp_path: Path) -> None:
 
     listed = vault.list_notes()
     assert listed[0]["meetings"] == 2 and listed[0]["latest"] == "2026-08-31"
+
+
+def test_vault_latest_date(tmp_path: Path) -> None:
+    folder = tmp_path / "Reuniones"
+    folder.mkdir()
+    vault = MeetingNotesVault(tmp_path, "Reuniones", None)
+    assert vault.latest_date() is None
+
+    (folder / "A.md").write_text("# A\n\n## 2026-09-10\n- x\n\n## 2026-08-01\n- y\n", encoding="utf-8")
+    (folder / "B.md").write_text("# B\n\n## 2026-09-02\n- z\n", encoding="utf-8")
+    assert vault.latest_date() == date(2026, 9, 10)
+
+
+def test_catch_up_days() -> None:
+    today = date(2026, 10, 8)
+    # Up to date: the normal window wins.
+    assert catch_up_days(date(2026, 10, 7), today, minimum=3) == 3
+    # Gap since 10 Sep: reach back to it (plus one day).
+    assert catch_up_days(date(2026, 9, 10), today, minimum=3) == 29
+    # Capped, and empty vaults use the normal window.
+    assert catch_up_days(date(2026, 1, 1), today, minimum=3, maximum=60) == 60
+    assert catch_up_days(None, today, minimum=3) == 3
+
+
+def _service(tmp_path: Path) -> MeetingNotesSyncService:
+    (tmp_path / "Reuniones").mkdir(exist_ok=True)
+    config = SimpleNamespace(
+        obsidian=SimpleNamespace(
+            enabled=True,
+            vault_path=str(tmp_path),
+            meetings_folder="Reuniones",
+            people_folder=None,
+            calendar_account="me@example.com",
+            skip_titles=[],
+            series_map={},
+            update_index=False,
+        ),
+        calendar_defaults=SimpleNamespace(timezone="America/Mexico_City", account_id="me@example.com"),
+    )
+    return MeetingNotesSyncService(config, credential_manager=None)
+
+
+@pytest.mark.asyncio
+async def test_sync_reports_error_when_every_source_fails(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    async def boom(days_back: int) -> list[Any]:
+        raise RuntimeError("403 Forbidden")
+
+    service._from_calendar = boom  # type: ignore[method-assign]
+    service._from_gmail = boom  # type: ignore[method-assign]
+
+    result = await service.sync(days_back=3)
+    assert "error" in result
+    assert "gemini_email" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_sync_without_drive_still_uses_gemini_emails(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    async def no_drive(days_back: int) -> list[Any]:
+        raise RuntimeError("drive.readonly scope missing")
+
+    async def emails(days_back: int) -> list[MeetingSource]:
+        return [MeetingSource(key="1", source="gemini_email", title="Weekly", day=date(2026, 10, 6), text="Resumen\n- algo importante que se trató")]
+
+    service._from_calendar = no_drive  # type: ignore[method-assign]
+    service._from_gmail = emails  # type: ignore[method-assign]
+
+    result = await service.sync(days_back=3)
+    assert "error" not in result
+    assert [w["note"] for w in result["written"]] == ["Weekly"]
+    assert has_section((tmp_path / "Reuniones" / "Weekly.md").read_text(encoding="utf-8"), date(2026, 10, 6))

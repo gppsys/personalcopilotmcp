@@ -1,5 +1,6 @@
 """Gmail provider implementation using Google Gmail API."""
 
+import asyncio
 import base64
 import email.mime.text
 from datetime import UTC, datetime
@@ -18,6 +19,15 @@ from executive_copilot.models.email import Email, EmailAddress, EmailLabel, Emai
 logger = get_logger(__name__)
 
 GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1"
+RATE_LIMIT_REASONS = ("rateLimitExceeded", "userRateLimitExceeded", "RATE_LIMIT_EXCEEDED")
+RETRY_DELAYS = (1.0, 3.0, 8.0)
+
+
+def is_rate_limited(response: httpx.Response) -> bool:
+    """Gmail signals quota pressure with 429 or with a 403 whose reason is a rate limit."""
+    if response.status_code == 429:
+        return True
+    return response.status_code == 403 and any(r in response.text for r in RATE_LIMIT_REASONS)
 
 
 class GmailProvider:
@@ -84,28 +94,33 @@ class GmailProvider:
         if label_ids:
             params["labelIds"] = label_ids
 
+        data = await self._get_json(f"{GMAIL_API_BASE}/users/me/messages", params)
+        result: list[dict[str, Any]] = data.get("messages", [])
+        return result
+
+    async def _get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
+        """GET with token refresh on 401 and backoff on rate limits (429 / 403 rateLimitExceeded)."""
         async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{GMAIL_API_BASE}/users/me/messages",
-                headers=self._headers(),
-                params=params,
-            )
+            response = await client.get(url, headers=self._headers(), params=params)
 
             if response.status_code == 401:
                 if await self._refresh_access_token():
-                    response = await client.get(
-                        f"{GMAIL_API_BASE}/users/me/messages",
-                        headers=self._headers(),
-                        params=params,
-                    )
+                    response = await client.get(url, headers=self._headers(), params=params)
                 if response.status_code == 401:
                     raise ValueError("Access token expired. Please re-authorize.")
 
-            response.raise_for_status()
-            data = response.json()
+            for delay in RETRY_DELAYS:
+                if not is_rate_limited(response):
+                    break
+                logger.warning("Gmail rate limited, retrying", account=self.account_id, delay=delay)
+                await asyncio.sleep(delay)
+                response = await client.get(url, headers=self._headers(), params=params)
 
-            result: list[dict[str, Any]] = data.get("messages", [])
-            return result
+            if response.status_code == 403:
+                logger.warning("Gmail 403", account=self.account_id, body=response.text[:300])
+            response.raise_for_status()
+            data: dict[str, Any] = response.json()
+            return data
 
     async def get_message(self, message_id: str) -> Email:
         """Get a full message by ID.
@@ -116,27 +131,10 @@ class GmailProvider:
         Returns:
             Email domain model
         """
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{GMAIL_API_BASE}/users/me/messages/{message_id}",
-                headers=self._headers(),
-                params={"format": "full"},
-            )
-
-            if response.status_code == 401:
-                if await self._refresh_access_token():
-                    response = await client.get(
-                        f"{GMAIL_API_BASE}/users/me/messages/{message_id}",
-                        headers=self._headers(),
-                        params={"format": "full"},
-                    )
-                if response.status_code == 401:
-                    raise ValueError("Access token expired. Please re-authorize.")
-
-            response.raise_for_status()
-            data = response.json()
-
-            return self._parse_message(data)
+        data = await self._get_json(
+            f"{GMAIL_API_BASE}/users/me/messages/{message_id}", {"format": "full"}
+        )
+        return self._parse_message(data)
 
     async def get_emails(
         self,
@@ -161,12 +159,18 @@ class GmailProvider:
         messages = await self.list_messages(max_results=max_results, query=search_query)
 
         emails = []
+        last_error: Exception | None = None
         for msg in messages:
             try:
                 email = await self.get_message(msg["id"])
                 emails.append(email)
             except Exception as e:
+                last_error = e
                 logger.warning("Failed to fetch message", message_id=msg["id"], error=str(e))
+
+        # Every fetch failing is an outage, not an empty mailbox: let callers see it.
+        if messages and not emails and last_error is not None:
+            raise RuntimeError(f"Could not fetch any of {len(messages)} Gmail messages: {last_error}")
 
         return emails
 

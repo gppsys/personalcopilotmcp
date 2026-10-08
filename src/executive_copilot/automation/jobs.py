@@ -368,6 +368,13 @@ class ObsidianMeetingSyncJob(Job):
             credential_manager=self._container.credential_manager,
             ai_service=ai_service,
         )
+        if self._settings.get("catch_up", True):
+            # Reach back to the newest meeting already in the vault, so a stopped
+            # container or a failed run never leaves a gap.
+            days_back = service.catch_up_days_back(
+                minimum=days_back, maximum=self._settings.get("max_days_back", 60)
+            )
+        self._logger.info("Syncing meeting notes", days_back=days_back)
         result = await service.sync(days_back=days_back)
         if "error" in result:
             return JobResult(
