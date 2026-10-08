@@ -321,126 +321,102 @@ class OAuthManager:
     async def refresh_google_token(
         self,
         account_id: str,
-        client_id: str,
-        client_secret: str,
+        client_id: str | None = None,
+        client_secret: str | None = None,
     ) -> str | None:
-        """Refresh Google access token using refresh token.
+        """Refresh a Google access token and store it on every sibling credential.
 
-        Args:
-            account_id: Account identifier
-            client_id: Google OAuth client ID
-            client_secret: Google OAuth client secret
-
-        Returns:
-            New access token or None if refresh failed
+        The OAuth client and refresh token are resolved across the account's
+        Gmail / Calendar / Drive credential records, so refresh works no matter
+        which record the OAuth client was entered on.
         """
-        cred = self.credential_manager.get_credential("email", "gmail", account_id)
-        if not cred or not cred.get("refresh_token"):
-            logger.warning("No refresh token found", account_id=account_id)
-            return None
-
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                GOOGLE_TOKEN_URL,
-                data={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "refresh_token": cred["refresh_token"],
-                    "grant_type": "refresh_token",
-                },
-            )
-
-            if response.status_code != 200:
-                logger.error(
-                    "Failed to refresh Google token",
-                    account_id=account_id,
-                    status_code=response.status_code,
-                    response=response.text,
-                )
-                return None
-
-            tokens = response.json()
-            new_access_token = tokens["access_token"]
-
-            # Update stored credential
-            self.credential_manager.save_credential(
-                provider_type="email",
-                provider_name="gmail",
-                account_id=account_id,
-                account_label=cred.get("account_label"),
-                access_token=new_access_token,
-                refresh_token=cred["refresh_token"],
-            )
-
-            calendar_cred = self.credential_manager.get_credential("calendar", "google", account_id)
-            if calendar_cred:
-                self.credential_manager.save_credential(
-                    provider_type="calendar",
-                    provider_name="google",
-                    account_id=account_id,
-                    account_label=calendar_cred.get("account_label", cred.get("account_label")),
-                    access_token=new_access_token,
-                    refresh_token=calendar_cred.get("refresh_token", cred["refresh_token"]),
-                )
-
-            logger.info("Refreshed Google token", account_id=account_id)
-            result: str | None = new_access_token
-            return result
+        return await self._refresh_token(
+            family="google",
+            token_url=GOOGLE_TOKEN_URL,
+            account_id=account_id,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
 
     async def refresh_microsoft_token(
         self,
         account_id: str,
-        client_id: str,
-        client_secret: str,
-        tenant: str = "common",
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        tenant: str | None = None,
     ) -> str | None:
-        """Refresh Microsoft access token using refresh token.
+        """Refresh a Microsoft access token and store it on every sibling credential.
 
-        Args:
-            account_id: Account identifier
-            client_id: Microsoft OAuth client ID
-            client_secret: Microsoft OAuth client secret
-            tenant: Microsoft tenant
-
-        Returns:
-            New access token or None if refresh failed
+        Microsoft rotates refresh tokens, so the new refresh token is written to
+        the Outlook mail, Outlook calendar and OneDrive records alike.
         """
-        cred = self.credential_manager.get_credential("email", "outlook", account_id)
-        if not cred or not cred.get("refresh_token"):
-            logger.warning("No refresh token found", account_id=account_id)
+        client = self.credential_manager.get_oauth_client("microsoft", account_id) or {}
+        effective_tenant = tenant or client.get("tenant_id") or "common"
+        return await self._refresh_token(
+            family="microsoft",
+            token_url=MICROSOFT_TOKEN_URL.format(tenant=effective_tenant),
+            account_id=account_id,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+
+    async def _refresh_token(
+        self,
+        family: str,
+        token_url: str,
+        account_id: str,
+        client_id: str | None,
+        client_secret: str | None,
+    ) -> str | None:
+        """Shared refresh-token grant for Google and Microsoft."""
+        client = self.credential_manager.get_oauth_client(family, account_id) or {}
+        effective_client_id = client_id or client.get("client_id")
+        effective_secret = client_secret or client.get("client_secret", "")
+        refresh_token = self.credential_manager.get_oauth_refresh_token(family, account_id)
+
+        if not effective_client_id or not refresh_token:
+            logger.warning(
+                "Cannot refresh token: missing OAuth client or refresh token",
+                family=family,
+                account_id=account_id,
+                has_client_id=bool(effective_client_id),
+                has_refresh_token=bool(refresh_token),
+            )
             return None
 
-        token_url = MICROSOFT_TOKEN_URL.format(tenant=tenant)
-
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
+        async with httpx.AsyncClient() as http:
+            response = await http.post(
                 token_url,
                 data={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "refresh_token": cred["refresh_token"],
+                    "client_id": effective_client_id,
+                    "client_secret": effective_secret,
+                    "refresh_token": refresh_token,
                     "grant_type": "refresh_token",
                 },
             )
 
-            if response.status_code != 200:
-                logger.error("Failed to refresh Microsoft token", account_id=account_id)
-                return None
-
-            tokens = response.json()
-            new_access_token = tokens["access_token"]
-            new_refresh_token = tokens.get("refresh_token", cred["refresh_token"])
-
-            # Update stored credential
-            self.credential_manager.save_credential(
-                provider_type="email",
-                provider_name="outlook",
+        if response.status_code != 200:
+            error_code = None
+            try:
+                error_code = response.json().get("error")
+            except ValueError:
+                pass
+            logger.error(
+                "Failed to refresh OAuth token; re-authorize the account in the admin panel",
+                family=family,
                 account_id=account_id,
-                account_label=cred.get("account_label"),
-                access_token=new_access_token,
-                refresh_token=new_refresh_token,
+                status_code=response.status_code,
+                error=error_code,
             )
+            return None
 
-            logger.info("Refreshed Microsoft token", account_id=account_id)
-            result: str | None = new_access_token
-            return result
+        tokens = response.json()
+        new_access_token: str = tokens["access_token"]
+        self.credential_manager.save_oauth_tokens(
+            family,
+            account_id,
+            access_token=new_access_token,
+            refresh_token=tokens.get("refresh_token") or refresh_token,
+        )
+        logger.info("Refreshed OAuth token", family=family, account_id=account_id)
+        return new_access_token

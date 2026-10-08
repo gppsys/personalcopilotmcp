@@ -2,7 +2,7 @@
 
 import logging
 import sys
-from typing import Any
+from typing import Any, TextIO
 
 import structlog
 from structlog.types import Processor
@@ -13,6 +13,7 @@ def configure_logging(
     level: str = "INFO",
     json_format: bool = False,
     add_timestamps: bool = True,
+    stream: TextIO | None = None,
 ) -> None:
     """Configure structured logging for the application.
 
@@ -20,6 +21,8 @@ def configure_logging(
         level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         json_format: If True, output JSON logs (for production)
         add_timestamps: If True, add ISO timestamps to log entries
+        stream: Where logs go (default stdout). MCP stdio servers must use
+            stderr: stdout carries the JSON-RPC protocol.
     """
     # Shared processors for all configurations
     shared_processors: list[Processor] = [
@@ -47,7 +50,7 @@ def configure_logging(
         processors = [
             *shared_processors,
             structlog.dev.ConsoleRenderer(
-                colors=True,
+                colors=stream is None,
                 exception_formatter=structlog.dev.plain_traceback,
             ),
         ]
@@ -64,14 +67,20 @@ def configure_logging(
     # Configure standard library logging
     logging.basicConfig(
         format="%(message)s",
-        stream=sys.stdout,
+        stream=stream or sys.stdout,
         level=getattr(logging, level.upper()),
+        force=True,
     )
 
     # Set levels for noisy libraries
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
+
+
+def configure_stdio_safe_logging(level: str = "WARNING") -> None:
+    """Logging for an MCP stdio server: everything to stderr, quiet by default."""
+    configure_logging(level=level, add_timestamps=True, stream=sys.stderr)
 
 
 def get_logger(name: str | None = None, **initial_context: Any) -> structlog.stdlib.BoundLogger:

@@ -19,6 +19,8 @@ from executive_copilot.providers.communication import SlackProvider
 from executive_copilot.providers.email.gmail import GmailProvider
 from executive_copilot.providers.email.outlook import OutlookProvider
 from executive_copilot.providers.task.asana import AsanaProvider
+from executive_copilot.services.email_calendar import EmailCalendarService
+from executive_copilot.services.obsidian_notes import MeetingNotesSyncService
 
 logger = get_logger(__name__)
 
@@ -3908,6 +3910,328 @@ Keep it concise and actionable. Focus on what's most important for this specific
 
         return await service.process_new_emails(hours_back=1)
 
+    # =========================================================================
+    # Obsidian meeting notes + e-mail -> calendar
+    # =========================================================================
+
+    def build_ai_service(db_manager: Any) -> Any | None:
+        """Server-side AI for summaries/extraction; None when not configured."""
+        try:
+            from executive_copilot.providers.base import ProviderRegistry
+            from executive_copilot.services.ai import AIService
+            from executive_copilot.services.container import ServiceContainer
+
+            container = ServiceContainer(config, db_manager, ProviderRegistry(), credential_manager)
+            return AIService(container)
+        except Exception:
+            return None
+
+    def meeting_notes_service(with_ai: bool = False) -> MeetingNotesSyncService:
+        from executive_copilot.database import DatabaseManager
+
+        ai = build_ai_service(DatabaseManager(config.database)) if with_ai else None
+        return MeetingNotesSyncService(config, credential_manager, ai_service=ai)
+
+    @mcp.tool()
+    async def sync_meeting_notes_to_obsidian(days_back: int = 7, dry_run: bool = False) -> dict[str, Any]:
+        """Write recent Gemini meeting notes into the Obsidian meetings folder.
+
+        Reads Gemini notes for the work calendar's meetings (attached Google
+        Docs, or the e-mails Gemini sends), summarizes each in Spanish
+        (summary, decisions, next steps) and adds a dated "## YYYY-MM-DD"
+        section to the matching series note, creating the note if needed and
+        linking known people. Meetings whose date already has a section are
+        skipped, so it is safe to run repeatedly. Runs automatically twice a day.
+
+        Args:
+            days_back: How many days of meetings to sync (default 7)
+            dry_run: Preview the sections without writing files
+
+        Returns:
+            Notes written/skipped, new notes created and per-source errors
+        """
+        service = meeting_notes_service(with_ai=True)
+        return await service.sync(days_back=days_back, dry_run=dry_run)
+
+    def vault_index() -> Any:
+        from executive_copilot.services.vault_index import build_index
+
+        return build_index(config)
+
+    @mcp.tool()
+    async def vault_overview(folder: str | None = None) -> dict[str, Any]:
+        """Map of the Obsidian vault: folders, note counts and recent notes.
+
+        Call without arguments first to see what exists (cheap). With a
+        folder (e.g. "Personas", "proyectos", "Reuniones", "SAFE") it lists
+        that folder's notes.
+
+        Args:
+            folder: Optional folder to list
+
+        Returns:
+            Folders with counts, or the notes in one folder
+        """
+        try:
+            return dict(vault_index().overview(folder))
+        except ValueError as e:
+            return {"error": str(e)}
+
+    @mcp.tool()
+    async def search_vault(query: str, folder: str | None = None, limit: int = 8) -> dict[str, Any]:
+        """Search the Obsidian vault (meetings, people, projects, architecture docs).
+
+        Token-efficient: returns short snippets with the note and section they
+        come from. Read more with read_vault_note(note, section) only when
+        needed. Matches by meaning and by words, so natural questions work
+        ("¿qué pasa si el banco no contesta a tiempo?").
+
+        Args:
+            query: Words to find, e.g. "multiadquirencia hyperswitch" or "PCI auditoria"
+            folder: Optional folder filter ("Reuniones", "Personas", "proyectos", "SAFE"...)
+            limit: Max sections (default 8, max 20)
+
+        Returns:
+            Ranked results: note path, title, section, date, snippet
+        """
+        from executive_copilot.services.vault_index import build_embedder
+
+        try:
+            index = vault_index()
+        except ValueError as e:
+            return {"error": str(e)}
+        # Meaning + words (falls back to words only without an OpenAI key).
+        results = await index.hybrid_search(query, build_embedder(config), folder=folder, limit=limit)
+        return {"query": query, "total": len(results), "results": results}
+
+    @mcp.tool()
+    async def read_vault_note(note: str, section: str | None = None, max_chars: int = 6000) -> dict[str, Any]:
+        """Read an Obsidian note, or just one section of it.
+
+        Long notes return a table of contents ("sections"); call again with
+        section=<heading> to read only that part instead of the whole note.
+
+        Args:
+            note: Note path from search results, or its name (partial works)
+            section: Optional heading to read (e.g. "2026-08-31" or "Decisión")
+            max_chars: Size cap (default 6000)
+
+        Returns:
+            Note content (possibly one section), truncation flag and sections
+        """
+        try:
+            return dict(vault_index().read(note, section=section, max_chars=max_chars))
+        except ValueError as e:
+            return {"error": str(e)}
+
+    @mcp.tool()
+    async def edit_vault_note(
+        note: str,
+        action: str,
+        section: str | None = None,
+        find: str | None = None,
+        text: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Edit an Obsidian note: record a decision, tick a checkbox, add or fix text.
+
+        Edits are surgical and scoped to one section; a copy of the note is
+        saved before writing and the exact change is returned as a diff.
+        Typical use: record that a decision was taken.
+
+        Actions:
+            check / uncheck: tick the one checkbox in `section` whose text contains `find`
+            append: add `text` (markdown) at the end of `section` (or of the note)
+            replace: replace the single occurrence of `find` in `section` with `text`
+
+        Args:
+            note: Note path or name (as returned by search_vault)
+            action: check, uncheck, append or replace
+            section: Heading that scopes the edit, e.g. "Decisión sobre Hyperswitch"
+            find: Checkbox text (check/uncheck) or exact text to replace
+            text: New markdown (append/replace)
+            dry_run: Return the diff without writing
+
+        Returns:
+            The note, the diff of the change and where the backup was saved
+        """
+        from pathlib import Path
+
+        from executive_copilot.services.vault_index import VaultEditError
+
+        try:
+            return dict(vault_index().edit(
+                note, action, section=section, find=find, text=text, dry_run=dry_run,
+                backup_dir=Path(config.obsidian.backup_dir),
+            ))
+        except (VaultEditError, ValueError) as e:
+            return {"error": str(e)}
+
+    @mcp.tool()
+    async def get_person_context(name: str) -> dict[str, Any]:
+        """Everything the vault says about a person, compactly.
+
+        Returns their person note (role, context), the notes that link to
+        them, and their latest mentions in meetings/projects as snippets.
+
+        Args:
+            name: Person name, e.g. "Josue" or "Rafael Ayala"
+
+        Returns:
+            Person note, linked notes and recent mentions
+        """
+        try:
+            return dict(vault_index().person_context(name))
+        except ValueError as e:
+            return {"error": str(e)}
+
+    def email_calendar_service(db_manager: Any, with_ai: bool = True) -> EmailCalendarService:
+
+        ai = build_ai_service(db_manager) if with_ai else None
+        return EmailCalendarService(config, credential_manager, db_manager=db_manager, ai_service=ai)
+
+    @mcp.tool()
+    async def review_email_calendar_requests(
+        days_back: int | None = None,
+        account: str | None = None,
+        include_processed: bool = False,
+    ) -> dict[str, Any]:
+        """Find Outlook e-mails that need something put on the calendar.
+
+        Detects meeting invitations, appointments, school/family events,
+        reservations, flights and dated deadlines, extracts date/time/place,
+        and flags the ones already on the default calendar (the Paycode
+        calendar). Nothing is created: show the proposals to the user, then
+        call add_email_to_calendar for the ones they approve, or
+        dismiss_email_calendar_request for the rest.
+
+        Args:
+            days_back: Look-back window in days (default from config, 7)
+            account: Only review this mailbox (default: configured Outlook accounts)
+            include_processed: Also show e-mails already added or dismissed
+
+        Returns:
+            Proposals with message_id, account, title, start, end, location,
+            notes, confidence, already_on_calendar and the default calendar used
+        """
+        from executive_copilot.database import DatabaseManager
+
+        db_manager = DatabaseManager(config.database)
+        try:
+            service = email_calendar_service(db_manager)
+            return await service.review(days_back=days_back, account=account, include_processed=include_processed)
+        finally:
+            await db_manager.close()
+
+    @mcp.tool()
+    async def add_email_to_calendar(
+        message_id: str,
+        account: str,
+        title: str,
+        start: str,
+        end: str | None = None,
+        location: str | None = None,
+        notes: str | None = None,
+        sender: str | None = None,
+        subject: str | None = None,
+        web_link: str | None = None,
+    ) -> dict[str, Any]:
+        """Add an event found by review_email_calendar_requests to the default (Paycode) calendar.
+
+        Times are local to the configured timezone (America/Mexico_City).
+        Events from personal mailboxes are created as private. The e-mail is
+        remembered so it is not proposed again.
+
+        Args:
+            message_id: message_id from the review proposal
+            account: Mailbox the e-mail came from (proposal 'account')
+            title: Event title
+            start: "YYYY-MM-DDTHH:MM" or "YYYY-MM-DD" for all-day
+            end: Optional end, same formats (default: +60 min, or one day)
+            location: Place or meeting link
+            notes: Short notes for the event description
+            sender: Proposal 'from' (added to the description)
+            subject: Proposal 'subject' (added to the description)
+            web_link: Proposal 'web_link' to open the e-mail
+
+        Returns:
+            The created event (id, link, calendar used)
+        """
+        from executive_copilot.database import DatabaseManager
+
+        db_manager = DatabaseManager(config.database)
+        try:
+            service = email_calendar_service(db_manager, with_ai=False)
+            return await service.add_to_calendar(
+                message_id=message_id, account=account, title=title, start=start, end=end,
+                location=location, notes=notes, sender=sender, subject=subject, web_link=web_link,
+            )
+        except ValueError as e:
+            return {"error": str(e)}
+        finally:
+            await db_manager.close()
+
+    @mcp.tool()
+    async def dismiss_email_calendar_request(message_id: str, account: str) -> dict[str, Any]:
+        """Stop proposing an e-mail in review_email_calendar_requests.
+
+        Args:
+            message_id: message_id from the review proposal
+            account: Mailbox the e-mail came from
+
+        Returns:
+            Confirmation
+        """
+        from executive_copilot.database import DatabaseManager
+
+        db_manager = DatabaseManager(config.database)
+        try:
+            return await email_calendar_service(db_manager, with_ai=False).dismiss(message_id, account)
+        finally:
+            await db_manager.close()
+
+    @mcp.tool()
+    async def create_calendar_event(
+        title: str,
+        start: str,
+        end: str | None = None,
+        location: str | None = None,
+        description: str | None = None,
+        attendees: list[str] | None = None,
+        private: bool = False,
+        calendar_account: str | None = None,
+        reminders_minutes: list[int] | None = None,
+    ) -> dict[str, Any]:
+        """Create a calendar event. Defaults to the Paycode calendar.
+
+        Times are local to the configured timezone (America/Mexico_City).
+        Invitations are e-mailed only when attendees are given.
+
+        Args:
+            title: Event title
+            start: "YYYY-MM-DDTHH:MM" or "YYYY-MM-DD" for all-day
+            end: Optional end, same formats (default: +60 min, or one day)
+            location: Place or meeting link
+            description: Event description
+            attendees: E-mail addresses to invite
+            private: Hide details from people who can see the calendar
+            calendar_account: Other calendar account (see list_calendars); default Paycode
+            reminders_minutes: Popup reminders, e.g. [30, 1440]
+
+        Returns:
+            The created event (id, link, calendar used)
+        """
+        service = EmailCalendarService(config, credential_manager)
+        try:
+            event = await service.create_event(
+                title=title, start=start, end=end, location=location, description=description,
+                private=private, calendar_account=calendar_account, attendees=attendees,
+                reminders=reminders_minutes,
+            )
+        except ValueError as e:
+            return {"error": str(e)}
+        return {"created": event}
+
     # --- Tech dashboard: weekly snapshots + HTML resource ---
 
     @mcp.tool()
@@ -3981,32 +4305,32 @@ Keep it concise and actionable. Focus on what's most important for this specific
     return mcp
 
 
-def main() -> None:
-    """Run the MCP server."""
-    import logging
+def main(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8091) -> None:
+    """Run the MCP server.
+
+    Args:
+        transport: "stdio" (Claude Desktop / docker exec) or "http"
+            (streamable HTTP at http://host:port/mcp, for Claude Code or a
+            future remote deployment)
+        host: Bind address for HTTP
+        port: Port for HTTP
+    """
     import os
-    import sys
 
-    # MCP uses stdio for communication, so ALL logging must go to stderr
-    # Set this BEFORE any imports that might log
-    logging.basicConfig(
-        format="%(levelname)s: %(message)s",
-        stream=sys.stderr,
-        level=logging.ERROR,  # Only errors - suppress everything else
-    )
+    from executive_copilot.logging import configure_stdio_safe_logging
 
-    # Suppress all loggers
-    for name in ["executive_copilot", "httpx", "httpcore", "structlog", "root", ""]:
-        logging.getLogger(name).setLevel(logging.ERROR)
-
-    # Suppress structlog output
-    os.environ["STRUCTLOG_LEVEL"] = "ERROR"
+    # stdout carries the protocol in stdio mode: all logs go to stderr.
+    configure_stdio_safe_logging("WARNING" if transport == "stdio" else "INFO")
+    os.environ.setdefault("FASTMCP_LOG_LEVEL", "ERROR")
 
     from executive_copilot.config import load_config
 
     config = load_config()
     mcp = create_mcp_server(config)
-    mcp.run()
+    if transport == "http":
+        mcp.run(transport="http", host=host, port=port)
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":

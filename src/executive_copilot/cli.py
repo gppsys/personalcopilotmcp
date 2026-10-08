@@ -40,10 +40,12 @@ def main() -> int:
     mcp_parser = subparsers.add_parser("mcp", help="Run MCP server")
     mcp_parser.add_argument(
         "--transport",
-        choices=["stdio", "sse"],
+        choices=["stdio", "http"],
         default="stdio",
-        help="Transport type",
+        help="stdio (default) or http (streamable HTTP at /mcp)",
     )
+    mcp_parser.add_argument("--host", default="127.0.0.1", help="HTTP bind address")
+    mcp_parser.add_argument("--port", type=int, default=8091, help="HTTP port")
 
     # Database commands
     db_parser = subparsers.add_parser("db", help="Database operations")
@@ -146,6 +148,14 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    # MCP: stdout is the protocol channel in stdio mode, so route every log
+    # (including config loading) to stderr before anything else runs.
+    if args.command == "mcp":
+        from executive_copilot.logging import configure_stdio_safe_logging
+
+        configure_stdio_safe_logging()
+        return run_mcp_server(load_config(args.config), args)
+
     # Load configuration
     config = load_config(args.config)
 
@@ -163,9 +173,7 @@ def main() -> int:
         return 0
 
     # Handle commands
-    if args.command == "mcp":
-        return run_mcp_server(config)
-    elif args.command == "db":
+    if args.command == "db":
         return asyncio.run(run_db_command(config, args.db_command))
     elif args.command == "automation":
         return asyncio.run(run_automation_command(config, args))
@@ -187,11 +195,15 @@ def main() -> int:
     return 0
 
 
-def run_mcp_server(config: "AppConfig") -> int:  # type: ignore[name-defined]
-    """Run the MCP server."""
+def run_mcp_server(config: "AppConfig", args: object) -> int:  # type: ignore[name-defined]
+    """Run the MCP server (stdio or streamable HTTP)."""
     from executive_copilot.mcp.server import main as mcp_main
 
-    mcp_main()
+    mcp_main(
+        transport=getattr(args, "transport", "stdio"),
+        host=getattr(args, "host", "127.0.0.1"),
+        port=getattr(args, "port", 8091),
+    )
     return 0
 
 

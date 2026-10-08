@@ -22,3 +22,31 @@ ai:
 database:
   driver: sqlite+aiosqlite
   name: executive_copilot.db
+
+# Default calendar for new events (create_calendar_event, add_email_to_calendar).
+calendar_defaults:
+  provider: google
+  account_id: you@company.com      # e.g. your work Google account
+  calendar_id: primary
+  timezone: America/Mexico_City
+  default_duration_minutes: 60
+  personal_events_private: true    # events found in personal mail are private
+
+# Which mailboxes are reviewed for e-mails that need a calendar entry.
+email_calendar:
+  source_accounts: []              # empty = every Outlook account
+  days_back: 7
+  max_emails: 60
+  ignore_senders: []               # e.g. ["netflix.com", "promo@shop.com"]
+
+# Obsidian meeting notes (from Gemini notes/transcripts).
+# The vault path itself lives in the repo's .env as OBSIDIAN_VAULT_PATH so the
+# Docker bind mount and the app use the same value.
+obsidian:
+  enabled: true
+  meetings_folder: Work/Meetings
+  people_folder: Work/People
+  series_map: {}                   # regex on meeting title -> note name
+  skip_titles: []                  # regexes of meetings never synced
+  index_folders: [Work]            # folders the assistant can search (default: top folder of meetings_folder)
+  index_exclude: []                # globs never indexed, e.g. ["Work/Private/*"]

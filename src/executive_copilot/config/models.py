@@ -1,5 +1,6 @@
 """Configuration models using Pydantic Settings."""
 
+import os
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -253,6 +254,96 @@ class MCPConfig(BaseModel):
     version: str = Field(default="0.1.0", description="Server version")
 
 
+def _env_path(name: str) -> Path | None:
+    value = os.environ.get(name)
+    return Path(value) if value else None
+
+
+class ObsidianConfig(BaseModel):
+    """Obsidian vault integration (meeting notes from Gemini transcripts).
+
+    In Docker the vault is bind-mounted at the same absolute path as on the
+    host, and ``OBSIDIAN_VAULT_PATH`` (from the repo's ``.env``) is the single
+    place that path is configured. A ``vault_path`` in YAML overrides it.
+    """
+
+    enabled: bool = Field(default=True, description="Enable Obsidian meeting-notes sync")
+    vault_path: Path | None = Field(
+        default_factory=lambda: _env_path("OBSIDIAN_VAULT_PATH"),
+        description="Absolute path to the Obsidian vault",
+    )
+    meetings_folder: str = Field(
+        default="Paycode/Reuniones", description="Vault-relative folder for meeting notes"
+    )
+    people_folder: str | None = Field(
+        default="Paycode/Personas", description="Vault-relative folder with one note per person"
+    )
+    calendar_account: str | None = Field(
+        default=None,
+        description="Google account whose meetings are synced (default: calendar_defaults.account_id)",
+    )
+    series_map: dict[str, str] = Field(
+        default_factory=dict,
+        description="Regex on the meeting title -> note name (without .md)",
+    )
+    skip_titles: list[str] = Field(
+        default_factory=list, description="Regexes of meeting titles to ignore"
+    )
+    update_index: bool = Field(default=True, description="Add new notes to README.md's index")
+    index_folders: list[str] = Field(
+        default_factory=list,
+        description="Vault folders searchable by the assistant (default: top folder of meetings_folder)",
+    )
+    index_exclude: list[str] = Field(
+        default_factory=list,
+        description="Glob patterns (vault-relative) never indexed, e.g. 'Paycode/SAFE/secrets/*'",
+    )
+    index_path: str = Field(default="vault_index.db", description="SQLite file holding the search index")
+    backup_dir: str = Field(
+        default="vault_backups", description="Where a copy of each note is saved before the assistant edits it"
+    )
+
+
+class CalendarDefaultsConfig(BaseModel):
+    """Where new events go when the caller does not name a calendar."""
+
+    provider: str = Field(default="google", description="Calendar provider (google, outlook)")
+    account_id: str | None = Field(
+        default=None,
+        description="Default calendar account (e.g. the work Google account)",
+    )
+    calendar_id: str = Field(default="primary", description="Calendar ID within the account")
+    timezone: str = Field(default="America/Mexico_City", description="IANA timezone for new events")
+    default_duration_minutes: int = Field(default=60, ge=5, description="Duration when no end given")
+    personal_events_private: bool = Field(
+        default=True,
+        description="Mark events created from personal e-mail as private on the work calendar",
+    )
+
+
+class EmailCalendarConfig(BaseModel):
+    """Detection of e-mails that should become calendar entries."""
+
+    source_accounts: list[str] = Field(
+        default_factory=list,
+        description="E-mail accounts to review (default: every Outlook account)",
+    )
+    days_back: int = Field(default=7, ge=1, le=60, description="Default look-back window")
+    max_emails: int = Field(default=60, ge=1, le=200, description="Max e-mails triaged per account")
+    target_provider: str | None = Field(
+        default=None, description="Calendar provider for events found in e-mail (default: calendar_defaults)"
+    )
+    target_account_id: str | None = Field(default=None, description="Calendar account for those events")
+    target_calendar_id: str | None = Field(default=None, description="Calendar ID for those events")
+    min_confidence: float = Field(
+        default=0.7, ge=0, le=1, description="Hide proposals below this extraction confidence"
+    )
+    ignore_senders: list[str] = Field(
+        default_factory=list,
+        description="Sender addresses/domains never considered (marketing, etc.)",
+    )
+
+
 class AppConfig(BaseSettings):
     """Root application configuration.
 
@@ -300,6 +391,11 @@ class AppConfig(BaseSettings):
 
     # Automation jobs
     automation_jobs: list[AutomationConfig] = Field(default_factory=list)
+
+    # Workspace integrations
+    obsidian: ObsidianConfig = Field(default_factory=ObsidianConfig)
+    calendar_defaults: CalendarDefaultsConfig = Field(default_factory=CalendarDefaultsConfig)
+    email_calendar: EmailCalendarConfig = Field(default_factory=EmailCalendarConfig)
 
     @model_validator(mode="before")
     @classmethod

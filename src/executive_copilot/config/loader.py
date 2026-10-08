@@ -11,6 +11,8 @@ from executive_copilot.logging import get_logger
 
 logger = get_logger(__name__)
 
+UI_SETTINGS_FILE = "ui_settings.yaml"
+
 
 class ConfigLoader:
     """Load and merge configuration from multiple YAML files."""
@@ -43,6 +45,13 @@ class ConfigLoader:
         for config_file in sorted(self.config_dir.glob("*.yaml")):
             if config_file.name == "config.yaml":
                 continue
+            # *.example.yaml files are templates to copy, never live config:
+            # merging them leaks placeholder accounts into the running app.
+            if config_file.name.endswith(".example.yaml"):
+                continue
+            # config.local.yaml and ui_settings.yaml are merged last, below.
+            if config_file.name in ("config.local.yaml", UI_SETTINGS_FILE):
+                continue
             file_config = self._load_yaml_file(config_file)
             merged_config = self._deep_merge(merged_config, file_config)
             logger.debug("Merged config file", file=str(config_file))
@@ -61,6 +70,12 @@ class ConfigLoader:
             local_config = self._load_yaml_file(local_file)
             merged_config = self._deep_merge(merged_config, local_config)
             logger.debug("Merged local config", file=str(local_file))
+
+        # Settings saved from the web workspace win over hand-edited files.
+        ui_file = self.config_dir / UI_SETTINGS_FILE
+        if ui_file.exists():
+            merged_config = self._deep_merge(merged_config, self._load_yaml_file(ui_file))
+            logger.debug("Merged UI settings", file=str(ui_file))
 
         merged_config["config_dir"] = self.config_dir
 
@@ -112,6 +127,43 @@ class ConfigLoader:
             else:
                 result[key] = value
         return result
+
+
+def load_ui_settings(config_dir: Path | str) -> dict[str, Any]:
+    """Settings saved from the web workspace (config/ui_settings.yaml)."""
+    path = Path(config_dir) / UI_SETTINGS_FILE
+    if not path.exists():
+        return {}
+    with path.open() as f:
+        data = yaml.safe_load(f)
+    return data if isinstance(data, dict) else {}
+
+
+def save_ui_settings(config_dir: Path | str, patch: dict[str, Any]) -> dict[str, Any]:
+    """Deep-merge ``patch`` into config/ui_settings.yaml and return the result.
+
+    A ``None`` value removes the key, so the hand-edited files apply again.
+    """
+
+    def merge(base: dict[str, Any], upd: dict[str, Any]) -> dict[str, Any]:
+        out = dict(base)
+        for key, value in upd.items():
+            if value is None:
+                out.pop(key, None)
+            elif isinstance(value, dict) and isinstance(out.get(key), dict):
+                out[key] = merge(out[key], value)
+            else:
+                out[key] = value
+        return out
+
+    data = merge(load_ui_settings(config_dir), patch)
+    path = Path(config_dir) / UI_SETTINGS_FILE
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("w") as f:
+        f.write("# Saved from the web workspace. Overrides the other config files.\n")
+        yaml.safe_dump(data, f, sort_keys=True, allow_unicode=True)
+    tmp.replace(path)
+    return data
 
 
 def load_config(config_dir: Path | str | None = None) -> AppConfig:

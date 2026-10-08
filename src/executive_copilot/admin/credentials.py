@@ -21,6 +21,12 @@ from executive_copilot.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Credential records that share one OAuth consent, in lookup priority order.
+OAUTH_FAMILIES: dict[str, list[tuple[str, str]]] = {
+    "google": [("email", "gmail"), ("calendar", "google"), ("document", "google_drive")],
+    "microsoft": [("email", "outlook"), ("calendar", "outlook"), ("document", "onedrive")],
+}
+
 
 class CredentialManager:
     """Manages encrypted storage of provider credentials.
@@ -190,6 +196,85 @@ class CredentialManager:
         except Exception as e:
             logger.error("Failed to decrypt credential", error=str(e))
             return None
+
+    # --- OAuth sibling resolution -------------------------------------------
+    #
+    # One OAuth consent covers several credential records for the same
+    # mailbox (e.g. Gmail + Google Calendar, or Outlook mail + calendar +
+    # OneDrive). The OAuth *client* (client_id/secret/tenant) is usually
+    # typed into only one of them in the admin panel, and the callback stores
+    # tokens on all of them without the client. Providers must therefore
+    # look across siblings, otherwise token refresh silently fails and the
+    # account looks "expired" until it is re-authorized by hand.
+
+    def get_oauth_client(self, family: str, account_id: str) -> dict[str, str] | None:
+        """Find the OAuth client (id/secret/tenant) for an account across siblings.
+
+        Args:
+            family: "google" or "microsoft"
+            account_id: Account e-mail
+
+        Returns:
+            Dict with client_id, client_secret and tenant_id, or None.
+        """
+        for provider_type, provider_name in OAUTH_FAMILIES.get(family, []):
+            cred = self.get_credential(provider_type, provider_name, account_id)
+            if cred and cred.get("client_id"):
+                return {
+                    "client_id": cred["client_id"],
+                    "client_secret": cred.get("client_secret") or "",
+                    "tenant_id": cred.get("tenant_id") or "common",
+                }
+        return None
+
+    def get_oauth_refresh_token(self, family: str, account_id: str) -> str | None:
+        """Find the refresh token for an account across sibling credentials."""
+        for provider_type, provider_name in OAUTH_FAMILIES.get(family, []):
+            cred = self.get_credential(provider_type, provider_name, account_id)
+            if cred and cred.get("refresh_token"):
+                token: str = cred["refresh_token"]
+                return token
+        return None
+
+    def save_oauth_tokens(
+        self,
+        family: str,
+        account_id: str,
+        access_token: str,
+        refresh_token: str | None = None,
+    ) -> None:
+        """Store refreshed tokens on every existing sibling credential."""
+        for provider_type, provider_name in OAUTH_FAMILIES.get(family, []):
+            if self.get_credential(provider_type, provider_name, account_id) is None:
+                continue
+            self.save_credential(
+                provider_type=provider_type,
+                provider_name=provider_name,
+                account_id=account_id,
+                access_token=access_token,
+                refresh_token=refresh_token,
+            )
+
+    def clear_oauth_tokens(self, family: str, account_id: str) -> int:
+        """Disconnect an account: drop its tokens but keep the OAuth client.
+
+        Returns:
+            Number of credential records changed.
+        """
+        changed = 0
+        for provider_type, provider_name in OAUTH_FAMILIES.get(family, []):
+            cred = self.get_credential(provider_type, provider_name, account_id)
+            if cred is None:
+                continue
+            for key in ("access_token", "refresh_token"):
+                cred.pop(key, None)
+            key = self._credential_key(provider_type, provider_name, account_id)
+            filepath = self.credentials_dir / f"{key}.enc"
+            with open(filepath, "wb") as f:
+                f.write(self._fernet.encrypt(json.dumps(cred).encode()))
+            os.chmod(filepath, 0o600)
+            changed += 1
+        return changed
 
     def get_credentials_for_provider(
         self,

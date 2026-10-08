@@ -4,6 +4,10 @@ Provides a unified logging interface using structlog for
 structured, context-rich logging.
 """
 
-from executive_copilot.logging.config import configure_logging, get_logger
+from executive_copilot.logging.config import (
+    configure_logging,
+    configure_stdio_safe_logging,
+    get_logger,
+)
 
-__all__ = ["configure_logging", "get_logger"]
+__all__ = ["configure_logging", "configure_stdio_safe_logging", "get_logger"]

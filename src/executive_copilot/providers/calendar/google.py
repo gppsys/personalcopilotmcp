@@ -105,17 +105,14 @@ class GoogleCalendarProvider(CalendarProvider):
         }
 
     async def _refresh_access_token(self) -> bool:
-        """Refresh the cached access token if a refresh token is available."""
-        cred = self.credential_manager.get_credential("calendar", "google", self.account_id)
-        if not cred or not cred.get("client_id") or not cred.get("refresh_token"):
-            return False
+        """Refresh the cached access token.
 
+        The OAuth client and refresh token are resolved across the account's
+        sibling credentials (mail / calendar / documents), and the new token is
+        stored on all of them.
+        """
         oauth_manager = OAuthManager(self.credential_manager)
-        new_token = await oauth_manager.refresh_google_token(
-            account_id=self.account_id,
-            client_id=cred["client_id"],
-            client_secret=cred.get("client_secret", ""),
-        )
+        new_token = await oauth_manager.refresh_google_token(account_id=self.account_id)
         if not new_token:
             return False
 
@@ -352,9 +349,17 @@ class GoogleCalendarProvider(CalendarProvider):
         if event.visibility != "default":
             body["visibility"] = event.visibility
 
+        if event.reminders:
+            body["reminders"] = {
+                "useDefault": False,
+                "overrides": [{"method": "popup", "minutes": m} for m in event.reminders],
+            }
+
         params = {"sendUpdates": "all" if event.send_notifications else "none"}
         cal_id = event.calendar_id or "primary"
-        data = await self._api_post(f"/calendars/{cal_id}/events", body)
+        data = await self._api_post(
+            f"/calendars/{cal_id}/events?{httpx.QueryParams(params)}", body
+        )
         return self._parse_event(data, cal_id)
 
     # --- Event Modification ---
@@ -709,6 +714,7 @@ class GoogleCalendarProvider(CalendarProvider):
             provider_ref=ProviderReference(
                 provider_name="google",
                 external_id=data["id"],
+                external_url=data.get("htmlLink"),
                 raw_data={"account": self.account_id},
             ),
         )

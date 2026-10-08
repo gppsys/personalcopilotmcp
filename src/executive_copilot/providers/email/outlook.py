@@ -45,18 +45,14 @@ class OutlookProvider:
         }
 
     async def _refresh_access_token(self) -> bool:
-        """Refresh the cached access token if a refresh token is available."""
-        cred = self.credential_manager.get_credential("email", "outlook", self.account_id)
-        if not cred or not cred.get("client_id") or not cred.get("refresh_token"):
-            return False
+        """Refresh the cached access token.
 
+        The OAuth client and refresh token are resolved across the account's
+        sibling credentials (mail / calendar / documents), and the new token is
+        stored on all of them.
+        """
         oauth_manager = OAuthManager(self.credential_manager)
-        new_token = await oauth_manager.refresh_microsoft_token(
-            account_id=self.account_id,
-            client_id=cred["client_id"],
-            client_secret=cred.get("client_secret", ""),
-            tenant=cred.get("tenant_id", "common"),
-        )
+        new_token = await oauth_manager.refresh_microsoft_token(account_id=self.account_id)
         if not new_token:
             return False
 
@@ -137,6 +133,25 @@ class OutlookProvider:
         """
         data = await self._api_get(f"/me/messages/{message_id}")
         return self._parse_message(data)
+
+    async def get_message_raw(self, message_id: str) -> dict[str, Any]:
+        """Get the full Graph message resource (incl. body, webLink and, for
+        meeting requests, startDateTime/endDateTime/location)."""
+        return await self._api_get(f"/me/messages/{message_id}")
+
+    async def list_recent_messages(
+        self,
+        since: datetime,
+        max_results: int = 50,
+        folder: str = "inbox",
+    ) -> list[dict[str, Any]]:
+        """List message metadata received since a point in time (newest first)."""
+        stamp = since.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return await self.list_messages(
+            max_results=max_results,
+            filter_query=f"receivedDateTime ge {stamp}",
+            folder=folder,
+        )
 
     async def get_emails(
         self,

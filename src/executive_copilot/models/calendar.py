@@ -101,7 +101,9 @@ class EventAttachment(ValueObject):
     def is_transcript(self) -> bool:
         """Check if this looks like a meeting transcript."""
         title_lower = self.title.lower()
-        keywords = ["transcript", "recording", "notes", "meeting notes"]
+        # Gemini attaches "Notes by Gemini" / "Notas de Gemini" docs; Meet adds
+        # "Transcript" / "Transcripción" docs. Spanish workspaces were missed.
+        keywords = ["transcript", "transcripci", "recording", "notes", "notas", "gemini"]
         return any(kw in title_lower for kw in keywords)
 
     @property

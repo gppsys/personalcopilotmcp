@@ -231,9 +231,18 @@ def create_admin_app(config_dir: Path | None = None, shutdown_event: "asyncio.Ev
 
     # --- HTML Routes ---
 
+    from executive_copilot.admin.workspace_api import create_workspace_router
+
+    app.include_router(create_workspace_router(config_dir, credential_manager))
+
     @app.get("/", response_class=HTMLResponse)
     async def index() -> str:
-        """Serve the admin panel."""
+        """Serve the workspace (agenda, tasks, Obsidian, chat)."""
+        return (Path(__file__).parent / "static" / "workspace.html").read_text(encoding="utf-8")
+
+    @app.get("/admin", response_class=HTMLResponse)
+    async def admin_panel() -> str:
+        """Serve the settings/admin panel."""
         return get_admin_html()
 
     @app.get("/tech", response_class=HTMLResponse)
@@ -308,8 +317,8 @@ def create_admin_app(config_dir: Path | None = None, shutdown_event: "asyncio.Ev
     async def start_google_auth(account: str, request: Request) -> HTMLResponse:
         """Start Google OAuth flow for an account."""
         # Get client credentials from stored config
-        cred = credential_manager.get_credential("email", "gmail", account)
-        if not cred or not cred.get("client_id"):
+        cred = credential_manager.get_oauth_client("google", account)
+        if not cred:
             raise HTTPException(
                 status_code=400,
                 detail=f"No client_id configured for {account}. Add OAuth credentials first."
@@ -345,8 +354,8 @@ def create_admin_app(config_dir: Path | None = None, shutdown_event: "asyncio.Ev
             if not oauth_state:
                 raise HTTPException(status_code=400, detail="Invalid or expired state token")
 
-            gmail_cred = credential_manager.get_credential("email", "gmail", oauth_state.account_id)
-            if not gmail_cred or not gmail_cred.get("client_id"):
+            gmail_cred = credential_manager.get_oauth_client("google", oauth_state.account_id)
+            if not gmail_cred:
                 raise HTTPException(
                     status_code=400,
                     detail=f"No Google OAuth credentials found for {oauth_state.account_id}",
@@ -375,7 +384,7 @@ def create_admin_app(config_dir: Path | None = None, shutdown_event: "asyncio.Ev
                         <p><strong>Account:</strong> {result.get("email", result.get("account_id"))}</p>
                         <p><strong>Name:</strong> {result.get("name", "N/A")}</p>
                         <p>Gmail and Google Calendar access has been granted.</p>
-                        <p><a href="/">Return to Admin Panel</a></p>
+                        <p><a href="/#accounts">Back to the workspace</a></p><script>setTimeout(function(){{ location.href = "/#accounts"; }}, 1500);</script>
                     </div>
                 </body>
                 </html>
@@ -391,8 +400,8 @@ def create_admin_app(config_dir: Path | None = None, shutdown_event: "asyncio.Ev
     async def start_microsoft_auth(account: str, request: Request, tenant: str = "common") -> HTMLResponse:
         """Start Microsoft OAuth flow for an account."""
         # Get client credentials
-        cred = credential_manager.get_credential("email", "outlook", account)
-        if not cred or not cred.get("client_id"):
+        cred = credential_manager.get_oauth_client("microsoft", account)
+        if not cred:
             raise HTTPException(
                 status_code=400,
                 detail=f"No client_id configured for {account}. Add OAuth credentials first."
@@ -428,12 +437,8 @@ def create_admin_app(config_dir: Path | None = None, shutdown_event: "asyncio.Ev
             if not oauth_state:
                 raise HTTPException(status_code=400, detail="Invalid or expired state token")
 
-            outlook_cred = credential_manager.get_credential(
-                "email",
-                "outlook",
-                oauth_state.account_id,
-            )
-            if not outlook_cred or not outlook_cred.get("client_id"):
+            outlook_cred = credential_manager.get_oauth_client("microsoft", oauth_state.account_id)
+            if not outlook_cred:
                 raise HTTPException(
                     status_code=400,
                     detail=f"No Microsoft OAuth credentials found for {oauth_state.account_id}",
@@ -463,7 +468,7 @@ def create_admin_app(config_dir: Path | None = None, shutdown_event: "asyncio.Ev
                         <p><strong>Account:</strong> {result.get("email", result.get("account_id"))}</p>
                         <p><strong>Name:</strong> {result.get("name", "N/A")}</p>
                         <p>Outlook Mail, Calendar and OneDrive access has been granted.</p>
-                        <p><a href="/">Return to Admin Panel</a></p>
+                        <p><a href="/#accounts">Back to the workspace</a></p><script>setTimeout(function(){{ location.href = "/#accounts"; }}, 1500);</script>
                     </div>
                 </body>
                 </html>
@@ -529,7 +534,7 @@ def create_admin_app(config_dir: Path | None = None, shutdown_event: "asyncio.Ev
         </div>
 
         <div class="mt-6">
-            <a href="/" class="text-blue-600 hover:text-blue-800">← Back to Admin Panel</a>
+            <a href="/admin" class="text-blue-600 hover:text-blue-800">← Back to Admin Panel</a>
         </div>
     </div>
 
@@ -1123,6 +1128,9 @@ def get_admin_html() -> str:
                 <p class="text-gray-600">Your AI-Powered Executive Assistant</p>
             </div>
             <div class="flex gap-3">
+                <a href="/" class="px-4 py-2 bg-gray-900 hover:bg-gray-700 text-white rounded-md text-sm font-medium transition-colors">
+                    ← Workspace
+                </a>
                 <a href="/auth" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium transition-colors">
                     Authorize Accounts
                 </a>

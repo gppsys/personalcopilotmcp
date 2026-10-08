@@ -17,6 +17,12 @@ os.environ["FASTMCP_LOG_LEVEL"] = "ERROR"
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 os.chdir(PROJECT_ROOT)
 
+# structlog defaults to printing on stdout, which would corrupt the protocol
+# as soon as a tool logs (e.g. an OAuth token refresh). Send it to stderr.
+from executive_copilot.logging import configure_stdio_safe_logging
+
+configure_stdio_safe_logging()
+
 # Now import and run
 from executive_copilot.config import load_config
 from executive_copilot.mcp.server import create_mcp_server

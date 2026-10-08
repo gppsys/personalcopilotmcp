@@ -346,6 +346,47 @@ class TranscriptScanJob(Job):
         )
 
 
+class ObsidianMeetingSyncJob(Job):
+    """Write recent Gemini meeting notes into the Obsidian vault."""
+
+    async def execute(self) -> JobResult:
+        """Sync meeting notes for the last ``days_back`` days."""
+        from executive_copilot.services.obsidian_notes import MeetingNotesSyncService
+
+        started_at = datetime.utcnow()
+        days_back = self._settings.get("days_back", 3)
+
+        ai_service = None
+        if self._settings.get("use_ai", True):
+            try:
+                ai_service = self._container.ai
+            except Exception as e:
+                self._logger.warning("AI unavailable, using Gemini sections", error=str(e))
+
+        service = MeetingNotesSyncService(
+            config=self._container.config,
+            credential_manager=self._container.credential_manager,
+            ai_service=ai_service,
+        )
+        result = await service.sync(days_back=days_back)
+        if "error" in result:
+            return JobResult(
+                job_name=self.name,
+                status=JobStatus.FAILED,
+                started_at=started_at,
+                error_message=result["error"],
+            )
+        return JobResult(
+            job_name=self.name,
+            status=JobStatus.COMPLETED,
+            started_at=started_at,
+            items_processed=len(result.get("written", [])),
+            details={k: v for k, v in result.items() if k != "written"} | {
+                "written": [f"{w['note']} {w['date']}" for w in result.get("written", [])]
+            },
+        )
+
+
 class CommitmentDetectionJob(Job):
     """Job for detecting commitments from emails and transcripts."""
 
@@ -509,4 +550,5 @@ JOB_TYPES: dict[str, type[Job]] = {
     "relationship_scan": RelationshipScanJob,
     "delegation_detection": DelegationDetectionJob,
     "email_forward": EmailForwardJob,
+    "obsidian_meeting_sync": ObsidianMeetingSyncJob,
 }

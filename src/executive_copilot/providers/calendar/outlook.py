@@ -105,48 +105,16 @@ class OutlookCalendarProvider(CalendarProvider):
         }
 
     async def _refresh_access_token(self) -> bool:
-        """Refresh the cached access token if a refresh token is available."""
-        calendar_cred = self.credential_manager.get_credential(
-            "calendar", "outlook", self.account_id
-        )
-        email_cred = self.credential_manager.get_credential("email", "outlook", self.account_id)
+        """Refresh the cached access token.
 
-        source_cred = email_cred or calendar_cred
-        if (
-            not source_cred
-            or not source_cred.get("client_id")
-            or not source_cred.get("refresh_token")
-        ):
-            return False
-
+        The OAuth client and refresh token are resolved across the account's
+        sibling credentials (mail / calendar / documents), and the new token is
+        stored on all of them.
+        """
         oauth_manager = OAuthManager(self.credential_manager)
-        new_token = await oauth_manager.refresh_microsoft_token(
-            account_id=self.account_id,
-            client_id=source_cred["client_id"],
-            client_secret=source_cred.get("client_secret", ""),
-            tenant=source_cred.get("tenant_id", "common"),
-        )
+        new_token = await oauth_manager.refresh_microsoft_token(account_id=self.account_id)
         if not new_token:
             return False
-
-        refreshed_email_cred = self.credential_manager.get_credential(
-            "email", "outlook", self.account_id
-        )
-        new_refresh_token = (
-            refreshed_email_cred or source_cred
-        ).get("refresh_token", source_cred["refresh_token"])
-
-        self.credential_manager.save_credential(
-            provider_type="calendar",
-            provider_name="outlook",
-            account_id=self.account_id,
-            account_label=(calendar_cred or source_cred).get("account_label"),
-            client_id=source_cred.get("client_id"),
-            client_secret=source_cred.get("client_secret"),
-            tenant_id=source_cred.get("tenant_id"),
-            access_token=new_token,
-            refresh_token=new_refresh_token,
-        )
 
         self._access_token = new_token
         return True

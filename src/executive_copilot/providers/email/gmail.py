@@ -48,17 +48,14 @@ class GmailProvider:
         }
 
     async def _refresh_access_token(self) -> bool:
-        """Refresh the cached access token if a refresh token is available."""
-        cred = self.credential_manager.get_credential("email", "gmail", self.account_id)
-        if not cred or not cred.get("client_id") or not cred.get("refresh_token"):
-            return False
+        """Refresh the cached access token.
 
+        The OAuth client and refresh token are resolved across the account's
+        sibling credentials (mail / calendar / documents), and the new token is
+        stored on all of them.
+        """
         oauth_manager = OAuthManager(self.credential_manager)
-        new_token = await oauth_manager.refresh_google_token(
-            account_id=self.account_id,
-            client_id=cred["client_id"],
-            client_secret=cred.get("client_secret", ""),
-        )
+        new_token = await oauth_manager.refresh_google_token(account_id=self.account_id)
         if not new_token:
             return False
 

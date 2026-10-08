@@ -1,0 +1,50 @@
+# Executive Copilot on Docker.
+#
+#   docker compose up -d --build          admin panel + automation (port 8090)
+#   docker compose --profile http up -d   + MCP over streamable HTTP (port 8091)
+#
+# MCP clients that speak stdio (Claude Desktop) run the server inside the
+# running container:  docker exec -i copilot-admin /opt/venv/bin/python -m executive_copilot.mcp
+#
+# Settings come from .env (gitignored): OBSIDIAN_VAULT_PATH and TZ.
+
+x-copilot: &copilot
+  build: .
+  init: true
+  # The repo is mounted so config/, credentials, SQLite DBs and cache files
+  # (briefing_cache.json, dashboard_done_items.json, tech_dashboard.html)
+  # are shared with the host and survive container restarts. The Obsidian
+  # vault is mounted at the same absolute path so one setting works on the
+  # host and in the container.
+  volumes:
+    - .:/app
+    - ${OBSIDIAN_VAULT_PATH:?Set OBSIDIAN_VAULT_PATH in .env}:${OBSIDIAN_VAULT_PATH}
+  environment:
+    - UV_PROJECT_ENVIRONMENT=/opt/venv
+    - TZ=${TZ:-America/Mexico_City}
+    - OBSIDIAN_VAULT_PATH=${OBSIDIAN_VAULT_PATH}
+  restart: unless-stopped
+
+services:
+  copilot:
+    <<: *copilot
+    container_name: copilot-admin
+    ports:
+      - "127.0.0.1:8090:8090"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/api/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  # MCP over HTTP for clients that support it (Claude Code: `claude mcp add
+  # --transport http copilot http://127.0.0.1:8091/mcp`). It has no
+  # authentication, so it is bound to localhost only. Opt in with --profile http.
+  copilot-mcp-http:
+    <<: *copilot
+    container_name: copilot-mcp-http
+    profiles: ["http"]
+    command: ["/opt/venv/bin/copilot", "mcp", "--transport", "http", "--host", "0.0.0.0", "--port", "8091"]
+    ports:
+      - "127.0.0.1:8091:8091"

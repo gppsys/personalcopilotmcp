@@ -1,0 +1,1492 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Executive Copilot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: { extend: { fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui'] } } }
+  };
+  (function () {
+    let pref = null;
+    try { pref = localStorage.getItem('ws-theme'); } catch (e) {}
+    const dark = pref ? pref === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.classList.toggle('dark', dark);
+  })();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+<style>
+  [x-cloak] { display: none !important; }
+  body { font-feature-settings: "cv11", "ss01"; }
+  .prose-note h1 { font-size: 1.5rem; font-weight: 700; margin: 0 0 .75rem; letter-spacing: -0.01em; }
+  .prose-note h2 { font-size: 1.05rem; font-weight: 600; margin: 1.5rem 0 .5rem; padding-top: .75rem; border-top: 1px solid rgb(148 163 184 / .25); }
+  .prose-note h3 { font-weight: 600; margin: 1rem 0 .4rem; }
+  .prose-note p { margin: .5rem 0; line-height: 1.65; }
+  .prose-note ul { list-style: disc; padding-left: 1.25rem; margin: .4rem 0; }
+  .prose-note ol { list-style: decimal; padding-left: 1.25rem; margin: .4rem 0; }
+  .prose-note li { margin: .25rem 0; line-height: 1.55; }
+  .prose-note a { color: rgb(99 102 241); text-decoration: none; }
+  .prose-note a:hover { text-decoration: underline; }
+  .prose-note code { font-size: .85em; padding: .1rem .3rem; border-radius: .3rem; background: rgb(148 163 184 / .18); }
+  .prose-note hr { margin: 1.25rem 0; border-color: rgb(148 163 184 / .3); }
+  .prose-note strong { font-weight: 600; }
+  .prose-chat p { margin: .35rem 0; line-height: 1.55; }
+  .prose-chat ul { list-style: disc; padding-left: 1.1rem; margin: .3rem 0; }
+  .prose-chat ol { list-style: decimal; padding-left: 1.1rem; margin: .3rem 0; }
+  .prose-chat li { margin: .15rem 0; }
+  .prose-chat strong { font-weight: 600; }
+  .prose-chat a { color: rgb(129 140 248); text-decoration: underline; }
+  .scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+  .scroll-thin::-webkit-scrollbar-thumb { background: rgb(148 163 184 / .35); border-radius: 8px; }
+  .dots span { animation: blink 1.2s infinite both; }
+  .dots span:nth-child(2) { animation-delay: .2s; }
+  .dots span:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: .2 } 40% { opacity: 1 } }
+  .graph-bg { background: radial-gradient(ellipse at 50% 45%, #1e1b4b 0%, #0b1023 55%, #020617 100%); }
+  .graph-bg svg text { font-family: Inter, ui-sans-serif, system-ui; paint-order: stroke; stroke: #020617; stroke-width: 3px; stroke-linejoin: round; }
+  .graph-bg .node { cursor: pointer; transition: opacity .2s; }
+  .graph-bg line { transition: stroke-opacity .2s; }
+</style>
+</head>
+<body class="h-full bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 antialiased" x-data="workspace()" x-init="init()">
+<div class="flex h-screen overflow-hidden">
+
+  <!-- Sidebar -->
+  <aside class="hidden md:flex w-60 shrink-0 flex-col border-r border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/60 backdrop-blur">
+    <div class="px-5 py-5 flex items-center gap-2.5">
+      <div class="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 grid place-items-center text-white font-bold text-sm shadow-sm">EC</div>
+      <div>
+        <div class="font-semibold leading-tight">Copilot</div>
+        <div class="text-xs text-slate-500 dark:text-slate-400">Executive workspace</div>
+      </div>
+    </div>
+    <nav class="px-3 space-y-1 flex-1">
+      <template x-for="item in nav" :key="item.id">
+        <button @click="go(item.id)"
+          class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition"
+          :class="view === item.id ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300 font-medium' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'">
+          <span class="w-5 h-5" x-html="icons[item.icon]"></span>
+          <span x-text="item.label"></span>
+          <span x-show="item.badge && badge(item.id)" class="ml-auto text-[11px] px-1.5 py-0.5 rounded-full bg-rose-500/15 text-rose-600 dark:text-rose-300" x-text="badge(item.id)"></span>
+        </button>
+      </template>
+    </nav>
+    <div class="p-3 space-y-1 border-t border-slate-200 dark:border-slate-800">
+      <a href="/admin" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">
+        <span class="w-5 h-5" x-html="icons.settings"></span> Ajustes y cuentas
+      </a>
+      <button @click="toggleTheme()" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">
+        <span class="w-5 h-5" x-html="dark ? icons.sun : icons.moon"></span> <span x-text="dark ? 'Tema claro' : 'Tema oscuro'"></span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="flex-1 min-w-0 flex flex-col">
+    <!-- Top bar -->
+    <header class="h-14 shrink-0 flex items-center gap-3 px-4 md:px-6 border-b border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/40 backdrop-blur">
+      <select class="md:hidden text-sm rounded-md border-slate-300 dark:bg-slate-800 dark:border-slate-700 px-2 py-1" x-model="view" @change="go(view)">
+        <template x-for="item in nav" :key="item.id"><option :value="item.id" x-text="item.label"></option></template>
+      </select>
+      <h1 class="hidden md:block font-semibold" x-text="nav.find(n => n.id === view)?.label"></h1>
+      <span class="hidden md:block text-sm text-slate-500 dark:text-slate-400" x-text="todayLabel"></span>
+      <div class="ml-auto flex items-center gap-2">
+        <button @click="refresh()" class="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800" title="Actualizar">
+          <span class="block w-4 h-4" :class="loading[view] ? 'animate-spin' : ''" x-html="icons.refresh"></span>
+        </button>
+        <button @click="chatOpen = !chatOpen" class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-500 shadow-sm">
+          <span class="w-4 h-4" x-html="icons.chat"></span> <span x-text="chatOpen ? 'Ocultar chat' : 'Chat'"></span>
+        </button>
+      </div>
+    </header>
+
+    <div class="flex-1 overflow-y-auto scroll-thin">
+      <div class="mx-auto px-4 md:px-8 py-6" :class="view === 'map' ? 'max-w-none' : 'max-w-6xl'">
+
+        <!-- Errors -->
+        <template x-if="errorsFor(view).length">
+          <div class="mb-5 rounded-xl border border-amber-300/60 bg-amber-50 dark:bg-amber-500/10 dark:border-amber-500/30 px-4 py-3 text-sm">
+            <div class="flex items-center gap-2 font-medium text-amber-800 dark:text-amber-300">
+              <span class="w-4 h-4" x-html="icons.alert"></span>
+              Algunas cuentas no respondieron
+              <a href="/auth" class="ml-auto text-xs underline">Autorizar cuentas</a>
+            </div>
+            <ul class="mt-1.5 text-amber-700 dark:text-amber-200/80 space-y-0.5">
+              <template x-for="e in errorsFor(view)"><li class="truncate"><span class="font-medium" x-text="(e.account || e.source) + (e.provider ? ' (' + e.provider + ')' : '')"></span>: <span x-text="e.error"></span></li></template>
+            </ul>
+          </div>
+        </template>
+
+        <!-- ============ HOY ============ -->
+        <section x-show="view === 'today'" x-cloak>
+          <div class="mb-6">
+            <h2 class="text-2xl md:text-3xl font-semibold tracking-tight" x-text="greeting()"></h2>
+            <p class="text-slate-500 dark:text-slate-400 mt-1" x-text="overviewLine()"></p>
+          </div>
+
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+            <template x-for="s in stats()" :key="s.label">
+              <button @click="s.go && go(s.go)" class="text-left rounded-2xl p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-indigo-300 dark:hover:border-indigo-500/50 transition shadow-sm">
+                <div class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400" x-text="s.label"></div>
+                <div class="mt-1 text-3xl font-semibold" :class="s.tone" x-text="s.value"></div>
+                <div class="text-xs text-slate-500 dark:text-slate-400 mt-1" x-text="s.hint"></div>
+              </button>
+            </template>
+          </div>
+
+          <div class="grid lg:grid-cols-5 gap-5">
+            <div class="lg:col-span-3 self-start rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+              <div class="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center">
+                <h3 class="font-semibold">Agenda de hoy</h3>
+                <button @click="go('calendar')" class="ml-auto text-xs text-indigo-600 dark:text-indigo-400 hover:underline">Nuevo evento</button>
+              </div>
+              <div class="p-2">
+                <template x-if="loading.today && !overview"><div class="p-6 text-sm text-slate-500">Cargando…</div></template>
+                <template x-if="overview && !overview.events.length"><div class="p-6 text-sm text-slate-500">Sin eventos hoy.</div></template>
+                <template x-for="ev in (overview?.events || [])" :key="ev.id + ev.account">
+                  <div class="flex gap-4 px-3 py-2.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/60" :class="isPast(ev.end) ? 'opacity-50' : ''">
+                    <div class="w-16 shrink-0 text-sm tabular-nums text-slate-500 dark:text-slate-400" x-text="ev.all_day ? 'Todo el día' : time(ev.start)"></div>
+                    <div class="min-w-0 flex-1">
+                      <div class="font-medium truncate" x-text="ev.title"></div>
+                      <div class="text-xs text-slate-500 dark:text-slate-400 flex gap-2 items-center mt-0.5">
+                        <span class="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800" x-text="ev.organization"></span>
+                        <span x-show="!ev.all_day" x-text="time(ev.start) + '–' + time(ev.end)"></span>
+                        <span class="truncate" x-text="ev.location && !ev.conference_url ? ev.location : ''"></span>
+                      </div>
+                    </div>
+                    <a x-show="ev.conference_url" :href="ev.conference_url" target="_blank" class="self-center text-xs px-2.5 py-1 rounded-lg bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20">Unirse</a>
+                  </div>
+                </template>
+              </div>
+            </div>
+
+            <div class="lg:col-span-2 space-y-5">
+              <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+                <div class="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center">
+                  <h3 class="font-semibold">Requiere atención</h3>
+                  <button @click="go('tasks')" class="ml-auto text-xs text-indigo-600 dark:text-indigo-400 hover:underline">Ver tareas</button>
+                </div>
+                <div class="p-2 max-h-80 overflow-y-auto scroll-thin">
+                  <template x-for="t in attention()" :key="t.key">
+                    <div class="flex items-start gap-3 px-3 py-2 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                      <button @click="completeAttention(t)" class="mt-0.5 h-4 w-4 shrink-0 rounded-full border-2 border-slate-300 dark:border-slate-600 hover:border-emerald-500" title="Completar"></button>
+                      <div class="min-w-0">
+                        <div class="text-sm truncate" x-text="t.title"></div>
+                        <div class="text-xs mt-0.5" :class="t.overdue ? 'text-rose-600 dark:text-rose-400' : 'text-slate-500'" x-text="t.meta"></div>
+                      </div>
+                    </div>
+                  </template>
+                  <template x-if="overview && !attention().length"><div class="p-6 text-sm text-slate-500">Nada urgente. 🎉</div></template>
+                </div>
+              </div>
+
+              <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+                <div class="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center">
+                  <h3 class="font-semibold">Reuniones recientes</h3>
+                  <button @click="go('notes')" class="ml-auto text-xs text-indigo-600 dark:text-indigo-400 hover:underline">Obsidian</button>
+                </div>
+                <div class="p-2">
+                  <template x-for="n in (overview?.recent_notes || [])" :key="n.name">
+                    <button @click="openNote(n.name, 'meetings')" class="w-full text-left flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                      <span class="w-4 h-4 text-violet-500" x-html="icons.note"></span>
+                      <span class="text-sm truncate flex-1" x-text="n.name"></span>
+                      <span class="text-xs text-slate-500" x-text="n.latest ? shortDate(n.latest) : ''"></span>
+                    </button>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ TAREAS ============ -->
+        <section x-show="view === 'tasks'" x-cloak>
+          <form @submit.prevent="createTask()" class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm p-3 mb-5 flex flex-wrap gap-2">
+            <input x-model="newTask.title" required placeholder="Nueva tarea en Asana…" class="flex-1 min-w-[12rem] bg-transparent px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 text-sm">
+            <input x-model="newTask.due_date" type="date" class="dark:[color-scheme:dark] px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm">
+            <input x-model="newTask.notes" placeholder="Notas (opcional)" class="flex-1 min-w-[10rem] bg-transparent px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm">
+            <button class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium" :disabled="busy.task">Agregar</button>
+          </form>
+
+          <div class="flex flex-wrap items-center gap-2 mb-4">
+            <template x-for="t in taskTabs" :key="t.id">
+              <button @click="taskTab = t.id" class="px-3 py-1.5 rounded-full text-sm border transition"
+                :class="taskTab === t.id ? 'bg-slate-900 text-white border-slate-900 dark:bg-white dark:text-slate-900 dark:border-white' : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'">
+                <span x-text="t.label"></span> <span class="opacity-60" x-text="taskCount(t.id)"></span>
+              </button>
+            </template>
+            <input x-model="taskFilter" placeholder="Filtrar…" class="ml-auto w-48 bg-transparent px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-sm">
+          </div>
+
+          <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm divide-y divide-slate-100 dark:divide-slate-800">
+            <template x-if="loading.tasks && !tasks"><div class="p-6 text-sm text-slate-500">Cargando…</div></template>
+            <template x-for="item in taskList()" :key="item.id">
+              <div class="flex items-start gap-3 px-4 py-3 group">
+                <button @click="completeTaskItem(item)" class="mt-0.5 h-5 w-5 shrink-0 rounded-full border-2 border-slate-300 dark:border-slate-600 hover:border-emerald-500 hover:bg-emerald-500/10 transition" title="Completar"></button>
+                <div class="min-w-0 flex-1">
+                  <div class="text-sm font-medium" x-text="item.title"></div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400 mt-1 flex flex-wrap gap-2 items-center">
+                    <span x-show="item.project" class="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-700 dark:text-indigo-300" x-text="item.project"></span>
+                    <span x-show="item.person" x-text="'👤 ' + item.person"></span>
+                    <span x-show="item.due_date" :class="isOverdue(item) ? 'text-rose-600 dark:text-rose-400 font-medium' : ''" x-text="'Vence ' + shortDate(item.due_date)"></span>
+                    <span x-show="item.days_waiting" x-text="item.days_waiting + ' días esperando'"></span>
+                    <span x-show="item.context" class="truncate max-w-md" x-text="item.context"></span>
+                  </div>
+                </div>
+                <a x-show="item.url" :href="item.url" target="_blank" class="opacity-0 group-hover:opacity-100 text-xs text-indigo-600 dark:text-indigo-400 hover:underline">Abrir</a>
+              </div>
+            </template>
+            <template x-if="tasks && !taskList().length"><div class="p-6 text-sm text-slate-500">Sin elementos.</div></template>
+          </div>
+        </section>
+
+        <!-- ============ CORREO → CALENDARIO ============ -->
+        <section x-show="view === 'calendar'" x-cloak>
+          <div class="grid lg:grid-cols-3 gap-5">
+            <div class="lg:col-span-2">
+              <div class="flex flex-wrap items-center gap-3 mb-4">
+                <div>
+                  <h2 class="font-semibold">Correos que requieren algo en tu calendario</h2>
+                  <p class="text-sm text-slate-500 dark:text-slate-400">Se agregan al calendario de Paycode. Los de correo personal quedan privados.</p>
+                </div>
+                <div class="ml-auto flex items-center gap-2">
+                  <select x-model.number="reviewDays" class="text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent px-2 py-1.5">
+                    <option value="3">3 días</option><option value="7">7 días</option><option value="14">14 días</option><option value="30">30 días</option>
+                  </select>
+                  <button @click="reviewEmails()" :disabled="loading.calendar" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium disabled:opacity-60">
+                    <span x-text="loading.calendar ? 'Revisando…' : 'Revisar correos'"></span>
+                  </button>
+                </div>
+              </div>
+
+              <template x-if="loading.calendar"><div class="rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 p-8 text-center text-sm text-slate-500">Leyendo tus correos y extrayendo fechas… (≈20 s)</div></template>
+              <template x-if="!loading.calendar && review && !review.proposals.length"><div class="rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 p-8 text-center text-sm text-slate-500">No encontré correos que requieran algo en el calendario. Revisé <span x-text="review.scanned"></span> correos.</div></template>
+              <template x-if="!review && !loading.calendar"><div class="rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 p-8 text-center text-sm text-slate-500">Pulsa “Revisar correos” para buscar invitaciones, citas y eventos.</div></template>
+
+              <div class="space-y-3">
+                <template x-for="p in (review?.proposals || [])" :key="p.message_id">
+                  <div class="rounded-2xl bg-white dark:bg-slate-900 border shadow-sm p-4" :class="p.already_on_calendar ? 'border-emerald-300 dark:border-emerald-500/40' : 'border-slate-200 dark:border-slate-800'">
+                    <div class="flex items-start gap-2 mb-3">
+                      <div class="min-w-0">
+                        <div class="text-xs text-slate-500 truncate"><span x-text="p.from"></span> · <span x-text="p.subject"></span></div>
+                        <div class="text-xs mt-0.5 text-slate-500 dark:text-slate-400" x-text="p.reason"></div>
+                      </div>
+                      <span class="ml-auto shrink-0 text-[11px] px-2 py-0.5 rounded-full" :class="p.already_on_calendar ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-300'" x-text="p.already_on_calendar ? 'Ya en calendario' : Math.round((p.confidence || 0) * 100) + '%'"></span>
+                    </div>
+                    <div class="grid sm:grid-cols-2 gap-2">
+                      <label class="sm:col-span-2 text-xs text-slate-500">Título<input x-model="p.title" class="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm text-slate-900 dark:text-slate-100"></label>
+                      <label class="text-xs text-slate-500">Inicio<input x-model="p.start" placeholder="YYYY-MM-DDTHH:MM" class="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm font-mono text-slate-900 dark:text-slate-100"></label>
+                      <label class="text-xs text-slate-500">Fin<input x-model="p.end" placeholder="opcional" class="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm font-mono text-slate-900 dark:text-slate-100"></label>
+                      <label class="text-xs text-slate-500">Lugar<input x-model="p.location" class="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm text-slate-900 dark:text-slate-100"></label>
+                      <label class="text-xs text-slate-500">Notas<input x-model="p.notes" class="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm text-slate-900 dark:text-slate-100"></label>
+                    </div>
+                    <div class="flex items-center gap-2 mt-3">
+                      <button @click="addProposal(p)" :disabled="!!p._busy" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium disabled:opacity-60">Agregar al calendario</button>
+                      <button @click="dismissProposal(p)" :disabled="!!p._busy" class="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-sm hover:bg-slate-100 dark:hover:bg-slate-800">Descartar</button>
+                      <a x-show="p.web_link" :href="p.web_link" target="_blank" class="ml-auto text-xs text-indigo-600 dark:text-indigo-400 hover:underline">Abrir correo</a>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+
+            <div class="space-y-5">
+              <form @submit.prevent="createEvent()" class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm p-4 space-y-2">
+                <h3 class="font-semibold mb-1">Nuevo evento</h3>
+                <input x-model="newEvent.title" required placeholder="Título" class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm">
+                <label class="block text-xs text-slate-500">Inicio
+                  <input x-model="newEvent.start" required type="datetime-local" class="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm text-slate-900 dark:text-slate-100 dark:[color-scheme:dark]">
+                </label>
+                <label class="block text-xs text-slate-500">Fin (opcional)
+                  <input x-model="newEvent.end" type="datetime-local" class="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm text-slate-900 dark:text-slate-100 dark:[color-scheme:dark]">
+                </label>
+                <input x-model="newEvent.location" placeholder="Lugar o enlace" class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm">
+                <label class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300"><input type="checkbox" x-model="newEvent.private" class="rounded"> Privado</label>
+                <button class="w-full px-4 py-2 rounded-lg bg-slate-900 dark:bg-white dark:text-slate-900 text-white text-sm font-medium" :disabled="busy.event">Crear en Paycode</button>
+              </form>
+
+              <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+                <div class="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center">
+                  <h3 class="font-semibold">Próximos 7 días</h3>
+                </div>
+                <div class="p-2 max-h-[28rem] overflow-y-auto scroll-thin">
+                  <template x-if="loading.week"><div class="p-4 text-sm text-slate-500">Cargando…</div></template>
+                  <template x-for="(group, day) in weekGroups()" :key="day">
+                    <div class="mb-2">
+                      <div class="px-2 pt-2 pb-1 text-xs font-medium uppercase tracking-wide text-slate-500" x-text="dayLabel(day)"></div>
+                      <template x-for="ev in group" :key="ev.id + ev.account">
+                        <div class="flex gap-3 px-2 py-1.5 text-sm">
+                          <span class="w-12 shrink-0 tabular-nums text-slate-500" x-text="ev.all_day ? '—' : time(ev.start)"></span>
+                          <span class="truncate" x-text="ev.title"></span>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ OBSIDIAN ============ -->
+        <section x-show="view === 'notes'" x-cloak class="h-full">
+          <div class="flex flex-wrap items-center gap-2 mb-4">
+            <div class="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 p-0.5">
+              <button @click="setFolder('meetings')" class="px-3 py-1.5 rounded-md text-sm" :class="folder === 'meetings' ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900' : 'text-slate-600 dark:text-slate-300'">Reuniones</button>
+              <button @click="setFolder('people')" class="px-3 py-1.5 rounded-md text-sm" :class="folder === 'people' ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900' : 'text-slate-600 dark:text-slate-300'">Personas</button>
+            </div>
+            <form @submit.prevent="searchNotes()" class="flex-1 min-w-[14rem] flex gap-2">
+              <input x-model="noteQuery" placeholder="Buscar decisiones, temas, personas…" class="flex-1 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm">
+              <button class="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm hover:bg-slate-100 dark:hover:bg-slate-800">Buscar</button>
+            </form>
+            <button @click="syncOpen = !syncOpen" class="px-3 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium flex items-center gap-2">
+              <span class="w-4 h-4" x-html="icons.sync"></span> Sincronizar Gemini
+            </button>
+          </div>
+
+          <!-- Sync panel -->
+          <div x-show="syncOpen" x-cloak class="mb-4 rounded-2xl border border-violet-300/60 dark:border-violet-500/30 bg-violet-50 dark:bg-violet-500/10 p-4">
+            <div class="flex flex-wrap items-center gap-3">
+              <div class="text-sm">Trae las notas de Gemini de los últimos
+                <input type="number" min="1" max="60" x-model.number="syncDays" class="w-16 mx-1 px-2 py-1 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm"> días y las agrega a cada nota de reunión.
+              </div>
+              <div class="ml-auto flex gap-2">
+                <button @click="syncNotes(true)" :disabled="loading.sync" class="px-3 py-1.5 rounded-lg border border-violet-400 text-violet-700 dark:text-violet-300 text-sm">Vista previa</button>
+                <button @click="syncNotes(false)" :disabled="loading.sync || !syncPreview" class="px-3 py-1.5 rounded-lg bg-violet-600 text-white text-sm disabled:opacity-50" title="Primero revisa la vista previa">Aplicar</button>
+              </div>
+            </div>
+            <template x-if="loading.sync"><div class="mt-3 text-sm text-violet-700 dark:text-violet-300">Leyendo notas de Gemini y resumiendo…</div></template>
+            <template x-if="syncResult">
+              <div class="mt-3 text-sm space-y-2">
+                <template x-for="e in (syncResult.errors || [])"><div class="text-amber-700 dark:text-amber-300" x-text="(e.source || e.title) + ': ' + e.error"></div></template>
+                <div x-show="!syncResult.written?.length && !syncResult.error" class="text-slate-600 dark:text-slate-300">No hay reuniones nuevas (encontradas: <span x-text="syncResult.sources_found"></span>, ya registradas: <span x-text="syncResult.skipped?.length || 0"></span>).</div>
+                <div x-show="syncResult.error" class="text-rose-600" x-text="syncResult.error"></div>
+                <template x-for="w in (syncResult.written || [])">
+                  <details class="rounded-lg bg-white/70 dark:bg-slate-900/70 px-3 py-2">
+                    <summary class="cursor-pointer"><span class="font-medium" x-text="w.note"></span> · <span x-text="w.date"></span> <span class="text-xs text-slate-500" x-text="syncResult.dry_run ? '(vista previa)' : '✓ escrito'"></span></summary>
+                    <pre x-show="w.preview" class="mt-2 whitespace-pre-wrap text-xs font-mono" x-text="w.preview"></pre>
+                  </details>
+                </template>
+              </div>
+            </template>
+          </div>
+
+          <div class="grid lg:grid-cols-[18rem_1fr] gap-5">
+            <!-- List -->
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+              <template x-if="noteResults">
+                <div>
+                  <div class="px-4 py-2.5 text-xs text-slate-500 border-b border-slate-100 dark:border-slate-800 flex">
+                    <span x-text="noteResults.length + ' resultados'"></span>
+                    <button @click="noteResults = null; noteQuery = ''" class="ml-auto hover:underline">Limpiar</button>
+                  </div>
+                  <div class="max-h-[65vh] overflow-y-auto scroll-thin divide-y divide-slate-100 dark:divide-slate-800">
+                    <template x-for="r in noteResults" :key="r.note + r.date">
+                      <button @click="openNote(r.note, folder)" class="w-full text-left px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                        <div class="text-sm font-medium truncate" x-text="r.note"></div>
+                        <div class="text-xs text-slate-500" x-text="r.date || ''"></div>
+                        <div class="text-xs text-slate-600 dark:text-slate-300 mt-1 line-clamp-2" x-text="r.matches[0]"></div>
+                      </button>
+                    </template>
+                  </div>
+                </div>
+              </template>
+              <template x-if="!noteResults">
+                <div class="max-h-[70vh] overflow-y-auto scroll-thin p-1.5">
+                  <template x-for="n in notes" :key="n.name">
+                    <button @click="openNote(n.name, folder)" class="w-full text-left flex items-center gap-2 px-3 py-2 rounded-lg text-sm"
+                      :class="note?.name === n.name ? 'bg-indigo-50 dark:bg-indigo-500/15 text-indigo-700 dark:text-indigo-300' : 'hover:bg-slate-50 dark:hover:bg-slate-800/60'">
+                      <span class="truncate flex-1" x-text="n.name"></span>
+                      <span class="text-[11px] text-slate-500 tabular-nums" x-text="n.latest ? shortDate(n.latest) : ''"></span>
+                    </button>
+                  </template>
+                  <template x-if="!notes.length && !loading.notes"><div class="p-4 text-sm text-slate-500">Sin notas.</div></template>
+                </div>
+              </template>
+            </div>
+
+            <!-- Viewer / editor -->
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm min-h-[60vh] flex flex-col">
+              <template x-if="!note"><div class="m-auto text-sm text-slate-500 p-10 text-center">Elige una nota para leerla o editarla.</div></template>
+              <template x-if="note">
+                <div class="flex flex-col flex-1">
+                  <div class="px-5 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center gap-2">
+                    <span class="w-4 h-4 text-violet-500" x-html="icons.note"></span>
+                    <span class="font-medium truncate" x-text="note.name"></span>
+                    <div class="ml-auto flex gap-2">
+                      <template x-if="!editing">
+                        <button @click="editing = true; draft = note.content" class="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-sm hover:bg-slate-100 dark:hover:bg-slate-800">Editar</button>
+                      </template>
+                      <template x-if="editing">
+                        <div class="flex gap-2">
+                          <button @click="editing = false" class="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-sm">Cancelar</button>
+                          <button @click="saveNote()" :disabled="busy.note" class="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm font-medium">Guardar</button>
+                        </div>
+                      </template>
+                      <button @click="askAboutNote()" class="px-3 py-1.5 rounded-lg text-sm bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-500/20">Preguntar al chat</button>
+                    </div>
+                  </div>
+                  <template x-if="!editing">
+                    <article class="prose-note px-6 py-5 text-[15px] overflow-y-auto scroll-thin max-h-[70vh]" x-html="renderNote(note.content)" @click="noteLinkClick($event)"></article>
+                  </template>
+                  <template x-if="editing">
+                    <textarea x-model="draft" @keydown.meta.s.prevent="saveNote()" @keydown.ctrl.s.prevent="saveNote()" class="flex-1 min-h-[60vh] m-3 p-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 font-mono text-sm leading-6 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"></textarea>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ MAPA ============ -->
+        <section x-show="view === 'map'" x-cloak>
+          <div class="grid grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
+            <template x-for="i in (graph?.insights || [])" :key="i.title">
+              <button @click="focusNode(i.node)" class="text-left rounded-2xl p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-indigo-300 dark:hover:border-indigo-500/50 shadow-sm transition">
+                <div class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400" x-text="i.title"></div>
+                <div class="mt-1 font-semibold truncate" x-text="i.value"></div>
+                <div class="text-xs text-slate-500 dark:text-slate-400" x-text="i.detail"></div>
+              </button>
+            </template>
+            <template x-if="loading.map && !graph">
+              <div class="col-span-full text-sm text-slate-500">Conectando personas, reuniones, proyectos y tareas…</div>
+            </template>
+          </div>
+
+          <div x-ref="graphWrap" class="graph-bg relative rounded-2xl overflow-hidden border border-slate-800 shadow-xl" :class="graphFull ? 'fixed inset-0 z-50 rounded-none' : 'h-[72vh]'">
+            <!-- toolbar -->
+            <div class="absolute top-3 left-3 right-3 z-10 flex flex-wrap items-center gap-2 pointer-events-none">
+              <form @submit.prevent="searchGraph()" class="pointer-events-auto">
+                <input x-model="graphQuery" list="graph-labels" placeholder="Buscar en el mapa…" class="w-56 px-3 py-1.5 rounded-lg bg-slate-900/80 border border-slate-700 text-sm text-slate-100 placeholder-slate-500 backdrop-blur focus:outline-none focus:ring-2 focus:ring-indigo-500/50">
+                <datalist id="graph-labels"><template x-for="n in (graph?.nodes || [])" :key="n.id"><option :value="n.label"></option></template></datalist>
+              </form>
+              <div class="flex flex-wrap gap-1.5 pointer-events-auto">
+                <template x-for="t in graphTypes" :key="t.id">
+                  <button x-show="graph?.stats?.[t.id]" @click="toggleType(t.id)" class="px-2.5 py-1 rounded-full text-xs border backdrop-blur transition"
+                    :class="hiddenTypes.includes(t.id) ? 'border-slate-700 text-slate-500 bg-slate-900/40' : 'border-slate-600 text-slate-100 bg-slate-900/70'">
+                    <span class="inline-block w-2 h-2 rounded-full mr-1" :style="'background:' + t.color"></span><span x-text="t.label"></span>
+                    <span class="opacity-60" x-text="graph?.stats?.[t.id]"></span>
+                  </button>
+                </template>
+              </div>
+              <div class="ml-auto flex gap-1.5 pointer-events-auto">
+                <button @click="fitGraph()" class="px-2.5 py-1.5 rounded-lg bg-slate-900/80 border border-slate-700 text-xs text-slate-200 hover:bg-slate-800">Encuadrar</button>
+                <button @click="renderGraph()" class="px-2.5 py-1.5 rounded-lg bg-slate-900/80 border border-slate-700 text-xs text-slate-200 hover:bg-slate-800">Reorganizar</button>
+                <button @click="graphFull = !graphFull; $nextTick(() => renderGraph())" class="p-1.5 rounded-lg bg-slate-900/80 border border-slate-700 text-slate-200 hover:bg-slate-800" title="Pantalla completa"><span class="block w-4 h-4" x-html="icons.expand"></span></button>
+              </div>
+            </div>
+
+            <div x-ref="graph" class="absolute inset-0"></div>
+
+            <template x-if="graph && !selected">
+              <div class="absolute bottom-3 left-3 text-[11px] text-slate-400 bg-slate-900/60 backdrop-blur rounded-lg px-3 py-1.5 pointer-events-none">
+                <span x-text="graph.nodes.length + ' elementos · ' + graph.links.length + ' conexiones'"></span> · arrastra, haz zoom, pasa el cursor o haz clic en un nodo
+              </div>
+            </template>
+
+            <!-- detail panel -->
+            <div x-show="selected" x-cloak x-transition class="absolute top-14 right-3 bottom-3 w-80 max-w-[85vw] z-10 rounded-2xl bg-slate-900/85 backdrop-blur border border-slate-700 text-slate-100 flex flex-col">
+              <template x-if="selected">
+                <div class="flex flex-col min-h-0 flex-1">
+                  <div class="p-4 border-b border-slate-700/70">
+                    <div class="flex items-center gap-2">
+                      <span class="inline-block w-2.5 h-2.5 rounded-full" :style="'background:' + typeColor(selected)"></span>
+                      <span class="text-[11px] uppercase tracking-wide text-slate-400" x-text="typeLabel(selected.type)"></span>
+                      <button @click="clearSelection()" class="ml-auto text-slate-400 hover:text-white"><span class="block w-4 h-4" x-html="icons.close"></span></button>
+                    </div>
+                    <div class="mt-1 font-semibold leading-snug" x-text="selected.label"></div>
+                    <div class="mt-2 space-y-0.5 text-xs text-slate-300">
+                      <template x-for="row in metaRows(selected)" :key="row[0]"><div><span class="text-slate-500" x-text="row[0] + ': '"></span><span x-text="row[1]"></span></div></template>
+                    </div>
+                    <div class="flex flex-wrap gap-2 mt-3">
+                      <button x-show="selected.meta.note" @click="openNote(selected.meta.note, selected.type === 'person' ? 'people' : 'meetings')" class="px-2.5 py-1 rounded-lg bg-violet-500/20 text-violet-200 text-xs hover:bg-violet-500/30">Abrir nota</button>
+                      <a x-show="selected.meta.url" :href="selected.meta.url" target="_blank" class="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-200 text-xs hover:bg-emerald-500/30">Abrir en Asana</a>
+                      <button @click="askAboutNode(selected)" class="px-2.5 py-1 rounded-lg bg-indigo-500/25 text-indigo-200 text-xs hover:bg-indigo-500/35">Preguntar al chat</button>
+                    </div>
+                  </div>
+                  <div class="flex-1 overflow-y-auto scroll-thin p-3 space-y-3">
+                    <template x-for="grp in neighborGroups(selected)" :key="grp.type">
+                      <div>
+                        <div class="text-[11px] uppercase tracking-wide text-slate-500 mb-1" x-text="typeLabel(grp.type) + ' · ' + grp.items.length"></div>
+                        <template x-for="n in grp.items" :key="n.id">
+                          <button @click="focusNode(n.id)" class="w-full text-left flex items-center gap-2 px-2 py-1 rounded-md text-sm hover:bg-slate-800">
+                            <span class="inline-block w-2 h-2 rounded-full shrink-0" :style="'background:' + typeColor(n)"></span>
+                            <span class="truncate" x-text="n.label"></span>
+                          </button>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ CUENTAS ============ -->
+        <section x-show="view === 'accounts'" x-cloak>
+          <div class="flex flex-wrap items-center gap-3 mb-4">
+            <div>
+              <h2 class="font-semibold">Cuentas conectadas</h2>
+              <p class="text-sm text-slate-500 dark:text-slate-400">Los secretos nunca se muestran: solo si existen y si funcionan.</p>
+            </div>
+            <div class="ml-auto flex gap-2">
+              <button @click="addOpen = !addOpen" class="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm hover:bg-slate-100 dark:hover:bg-slate-800">+ Agregar cuenta</button>
+              <button @click="testAll()" :disabled="loading.testAll" class="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium disabled:opacity-60" x-text="loading.testAll ? 'Probando…' : 'Probar todas'"></button>
+            </div>
+          </div>
+
+          <!-- add account -->
+          <form x-show="addOpen" x-cloak @submit.prevent="addAccount()" class="mb-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm p-4 grid sm:grid-cols-2 lg:grid-cols-4 gap-2">
+            <select x-model="newAccount.family" class="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm">
+              <option value="google">Google (Gmail + Calendar)</option>
+              <option value="microsoft">Microsoft (Outlook + Calendar)</option>
+            </select>
+            <input x-model="newAccount.account_id" required type="email" placeholder="correo@dominio.com" class="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm">
+            <input x-model="newAccount.client_id" placeholder="Client ID (vacío = reutilizar)" class="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm">
+            <input x-model="newAccount.client_secret" type="password" autocomplete="new-password" placeholder="Client secret" class="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm">
+            <div class="sm:col-span-2 lg:col-span-4 flex items-center gap-3">
+              <p class="text-xs text-slate-500">Si dejas el Client ID vacío se usa la misma app OAuth de tus otras cuentas de ese proveedor. Después te llevamos a autorizar.</p>
+              <button class="ml-auto px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium">Guardar y conectar</button>
+            </div>
+          </form>
+
+          <div class="grid md:grid-cols-2 gap-3 mb-6">
+            <template x-for="a in (accountsData?.oauth || [])" :key="a.family + a.account_id">
+              <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm p-4">
+                <div class="flex items-start gap-3">
+                  <div class="h-9 w-9 shrink-0 rounded-xl grid place-items-center font-bold text-white text-sm" :class="a.family === 'google' ? 'bg-gradient-to-br from-blue-500 to-emerald-500' : 'bg-gradient-to-br from-sky-500 to-indigo-600'" x-text="a.family === 'google' ? 'G' : 'M'"></div>
+                  <div class="min-w-0 flex-1">
+                    <div class="font-medium truncate" x-text="a.account_id"></div>
+                    <div class="text-xs text-slate-500 truncate"><span x-text="a.provider"></span><span x-show="a.label" x-text="' · ' + a.label"></span></div>
+                  </div>
+                  <span class="shrink-0 text-[11px] px-2 py-0.5 rounded-full" :class="statusClass(a)" x-text="statusText(a)"></span>
+                </div>
+                <div class="flex flex-wrap gap-1.5 mt-3 text-[11px]">
+                  <template x-for="svc in a.services"><span class="px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300" x-text="svc"></span></template>
+                  <template x-for="o in a.used_by"><span class="px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-700 dark:text-indigo-300" x-text="o"></span></template>
+                  <span x-show="!a.used_by.length" class="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-300">sin organización</span>
+                </div>
+                <div x-show="tests[a.family + a.account_id]?.detail" class="mt-2 text-xs" :class="tests[a.family + a.account_id]?.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'" x-text="tests[a.family + a.account_id]?.detail"></div>
+                <template x-if="a.status === 'no_client'">
+                  <form @submit.prevent="saveClient(a)" class="mt-3 grid grid-cols-2 gap-2">
+                    <input x-model="a._client_id" placeholder="Client ID (vacío = reutilizar)" class="col-span-2 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm">
+                    <input x-model="a._client_secret" type="password" autocomplete="new-password" placeholder="Client secret" class="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm">
+                    <button class="px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-white dark:text-slate-900 text-white text-sm">Guardar cliente</button>
+                  </form>
+                </template>
+                <div class="flex flex-wrap gap-2 mt-3">
+                  <button x-show="!['no_client', 'not_connected'].includes(a.status)" @click="testAccount(a.family, a.account_id)" class="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs hover:bg-slate-100 dark:hover:bg-slate-800">Probar</button>
+                  <a x-show="a.status !== 'no_client'" :href="connectUrl(a)" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium" x-text="a.status === 'not_connected' ? 'Conectar' : 'Reconectar'"></a>
+                  <button x-show="a.status !== 'not_connected' && a.status !== 'no_client'" @click="accountAction('disconnect', a.family, a.account_id, '¿Desconectar ' + a.account_id + '? Se borran los tokens; la app OAuth se conserva.')" class="ml-auto px-3 py-1.5 rounded-lg text-xs text-slate-500 hover:text-rose-600">Desconectar</button>
+                  <button @click="accountAction('remove', a.family, a.account_id, '¿Eliminar ' + a.account_id + ' (' + a.provider + ')? Se borran sus credenciales y se quita de tus organizaciones.')" class="px-3 py-1.5 rounded-lg text-xs text-slate-500 hover:text-rose-600" :class="(a.status === 'not_connected' || a.status === 'no_client') ? 'ml-auto' : ''">Eliminar</button>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <h3 class="font-semibold mb-2">Servicios con token</h3>
+          <div class="grid md:grid-cols-3 gap-3 mb-6">
+            <template x-for="t in (accountsData?.tokens || [])" :key="t.kind + t.account_id">
+              <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm p-4">
+                <div class="flex items-center gap-2">
+                  <div class="font-medium" x-text="t.label"></div>
+                  <span class="ml-auto text-[11px] px-2 py-0.5 rounded-full" :class="statusClass(t)" x-text="statusText(t)"></span>
+                </div>
+                <div class="text-xs text-slate-500 truncate mt-0.5" x-text="t.account_id"></div>
+                <div x-show="tests[t.kind + t.account_id]?.detail" class="mt-2 text-xs" :class="tests[t.kind + t.account_id]?.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'" x-text="tests[t.kind + t.account_id]?.detail"></div>
+                <form @submit.prevent="saveToken(t)" class="mt-3 flex gap-2">
+                  <input x-model="t._token" type="password" autocomplete="new-password" :placeholder="t.status === 'connected' ? 'Reemplazar token…' : 'Pegar token / API key'" class="flex-1 min-w-0 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm">
+                  <button x-show="t._token" class="px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-white dark:text-slate-900 text-white text-xs">Guardar</button>
+                  <button type="button" @click="testAccount(t.kind, t.account_id)" class="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs">Probar</button>
+                </form>
+              </div>
+            </template>
+          </div>
+
+          <!-- calendars -->
+          <div class="grid lg:grid-cols-3 gap-5">
+            <div class="lg:col-span-2 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm p-5">
+              <h3 class="font-semibold">Calendarios</h3>
+              <p class="text-sm text-slate-500 dark:text-slate-400 mb-4">Elige dónde se crean los eventos y qué buzones de Outlook se revisan.</p>
+              <div class="space-y-4">
+                <label class="block text-sm">
+                  <span class="font-medium">Calendario por defecto para eventos nuevos</span>
+                  <select x-model="calForm.default" class="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm">
+                    <template x-for="c in calendarOptions()" :key="c.key"><option :value="c.key" x-text="c.label" :selected="c.key === calForm.default"></option></template>
+                  </select>
+                </label>
+                <label class="block text-sm">
+                  <span class="font-medium">Eventos detectados en correos de Outlook van a</span>
+                  <select x-model="calForm.email" class="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm">
+                    <option value="__default">Igual que el calendario por defecto</option>
+                    <template x-for="c in calendarOptions()" :key="c.key"><option :value="c.key" x-text="c.label" :selected="c.key === calForm.email"></option></template>
+                  </select>
+                </label>
+                <div class="text-sm">
+                  <span class="font-medium">Buzones de Outlook a revisar</span>
+                  <div class="mt-1 flex flex-wrap gap-3">
+                    <template x-for="acc in (calSettings?.outlook_accounts || [])" :key="acc">
+                      <label class="flex items-center gap-2"><input type="checkbox" :value="acc" x-model="calForm.sources" class="rounded"> <span x-text="acc"></span></label>
+                    </template>
+                  </div>
+                </div>
+                <div class="flex items-center gap-3">
+                  <button @click="saveCalendarSettings()" :disabled="busy.cal" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium">Guardar</button>
+                  <span x-show="calendarsData?.errors?.length" class="text-xs text-amber-600 dark:text-amber-400">Algunas cuentas no listaron sus calendarios: reconéctalas para ver todos.</span>
+                </div>
+              </div>
+            </div>
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm p-5 text-sm">
+              <h3 class="font-semibold mb-2">URIs de redirección</h3>
+              <p class="text-slate-500 dark:text-slate-400 mb-3">Regístralas en Google Cloud y en Azure. Abre siempre este panel con la misma dirección.</p>
+              <template x-for="u in redirectUris()" :key="u.label">
+                <div class="mb-2">
+                  <div class="text-xs text-slate-500" x-text="u.label"></div>
+                  <div class="flex items-center gap-2 mt-0.5">
+                    <code class="flex-1 min-w-0 truncate text-xs px-2 py-1.5 rounded bg-slate-100 dark:bg-slate-800" x-text="u.value"></code>
+                    <button @click="copy(u.value)" class="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800" title="Copiar"><span class="block w-4 h-4" x-html="icons.copy"></span></button>
+                  </div>
+                </div>
+              </template>
+              <a href="/admin" class="inline-block mt-2 text-xs text-indigo-600 dark:text-indigo-400 hover:underline">Configuración avanzada →</a>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <!-- Chat panel -->
+  <aside x-show="chatOpen" x-cloak
+    class="fixed inset-0 z-40 md:static md:z-auto md:w-[26rem] shrink-0 flex flex-col border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+    <div class="h-14 shrink-0 flex items-center gap-2 px-4 border-b border-slate-200 dark:border-slate-800">
+      <div class="h-7 w-7 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 grid place-items-center text-white"><span class="w-4 h-4" x-html="icons.spark"></span></div>
+      <div class="font-semibold text-sm">Copiloto</div>
+      <button @click="clearChat()" class="ml-auto text-xs text-slate-500 hover:text-slate-800 dark:hover:text-slate-200">Nueva conversación</button>
+      <button @click="chatOpen = false" class="md:hidden p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800"><span class="block w-4 h-4" x-html="icons.close"></span></button>
+    </div>
+
+    <div class="shrink-0 flex items-center gap-2 px-4 py-2 border-b border-slate-200 dark:border-slate-800 text-xs">
+      <label class="text-slate-500" for="chat-model">Modelo</label>
+      <select id="chat-model" x-model="chatModel" @change="store('ws-model', chatModel)" class="flex-1 min-w-0 px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 bg-transparent text-xs">
+        <template x-for="m in models" :key="m.id">
+          <option :value="m.id" :selected="m.id === chatModel" x-text="m.label + ' · costo ' + m.cost"></option>
+        </template>
+      </select>
+      <span class="text-slate-500 tabular-nums" title="Tokens usados en esta conversación" x-show="conversationTokens()" x-text="fmtTokens(conversationTokens()) + ' tokens'"></span>
+    </div>
+
+    <div x-ref="chatScroll" class="flex-1 overflow-y-auto scroll-thin px-4 py-4 space-y-4">
+      <template x-if="!messages.length">
+        <div class="pt-6">
+          <p class="text-sm text-slate-500 dark:text-slate-400 mb-3">Pregúntame por tu agenda, tareas, correos o lo que se decidió en una reunión.</p>
+          <div class="flex flex-wrap gap-2">
+            <template x-for="s in suggestions">
+              <button @click="send(s)" class="text-left text-sm px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800" x-text="s"></button>
+            </template>
+          </div>
+        </div>
+      </template>
+
+      <template x-for="(m, i) in messages" :key="i">
+        <div>
+          <template x-if="m.role === 'user'">
+            <div class="flex justify-end"><div class="max-w-[85%] rounded-2xl rounded-br-md bg-indigo-600 text-white px-3.5 py-2 text-sm whitespace-pre-wrap" x-text="m.content"></div></div>
+          </template>
+          <template x-if="m.role === 'assistant'">
+            <div class="space-y-2">
+              <div class="flex flex-wrap gap-1.5" x-show="m.steps?.length">
+                <template x-for="st in (m.steps || [])">
+                  <span class="text-[11px] px-2 py-0.5 rounded-full" :class="st.error ? 'bg-rose-500/10 text-rose-600' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'" x-text="st.label + (st.detail ? ': ' + st.detail : '')"></span>
+                </template>
+              </div>
+              <div class="prose-chat text-sm text-slate-800 dark:text-slate-200" x-html="md(m.content)"></div>
+              <div x-show="m.usage" class="text-[11px] text-slate-400" x-text="(m.model || '') + ' · ' + fmtTokens(m.usage?.total_tokens || 0) + ' tokens'"></div>
+              <template x-for="(a, j) in (m.actions || [])" :key="j">
+                <div class="rounded-xl border border-indigo-200 dark:border-indigo-500/30 bg-indigo-50/60 dark:bg-indigo-500/10 p-3 text-sm">
+                  <div class="text-xs font-medium uppercase tracking-wide text-indigo-700 dark:text-indigo-300 mb-1" x-text="actionLabel(a)"></div>
+                  <div class="font-medium" x-text="a.title"></div>
+                  <div class="text-xs text-slate-600 dark:text-slate-300 mt-0.5" x-text="actionDetail(a)"></div>
+                  <div class="flex gap-2 mt-2" x-show="!a._done">
+                    <button @click="runAction(a)" :disabled="!!a._busy" class="px-3 py-1 rounded-lg bg-indigo-600 text-white text-xs font-medium disabled:opacity-60">Confirmar</button>
+                    <button @click="a._done = 'Ignorado'" class="px-3 py-1 rounded-lg border border-slate-300 dark:border-slate-600 text-xs">Ignorar</button>
+                  </div>
+                  <div x-show="a._done" class="mt-2 text-xs font-medium" :class="a._error ? 'text-rose-600' : 'text-emerald-600 dark:text-emerald-400'" x-text="a._done"></div>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </template>
+      <div x-show="thinking" class="flex items-center gap-2 text-sm text-slate-500">
+        <span class="dots text-lg leading-none"><span>•</span><span>•</span><span>•</span></span> Pensando…
+      </div>
+    </div>
+
+    <form @submit.prevent="send()" class="p-3 border-t border-slate-200 dark:border-slate-800">
+      <div class="flex items-end gap-2 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2 focus-within:ring-2 focus-within:ring-indigo-500/40">
+        <textarea x-model="input" x-ref="chatInput" rows="1" placeholder="Escribe un mensaje…"
+          @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); send(); }"
+          @input="$el.style.height = 'auto'; $el.style.height = Math.min($el.scrollHeight, 160) + 'px'"
+          class="flex-1 resize-none bg-transparent text-sm focus:outline-none py-1"></textarea>
+        <button :disabled="thinking || !input.trim()" class="h-8 w-8 shrink-0 grid place-items-center rounded-full bg-indigo-600 text-white disabled:opacity-40"><span class="w-4 h-4" x-html="icons.send"></span></button>
+      </div>
+    </form>
+  </aside>
+</div>
+
+<!-- Toasts -->
+<div class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 space-y-2">
+  <template x-for="t in toasts" :key="t.id">
+    <div class="px-4 py-2.5 rounded-xl shadow-lg text-sm text-white" :class="t.error ? 'bg-rose-600' : 'bg-slate-900 dark:bg-slate-700'" x-text="t.text"></div>
+  </template>
+</div>
+
+<script>
+const TZ = 'America/Mexico_City';
+const svg = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="w-full h-full">${d}</svg>`;
+const ICONS = {
+  home: svg('<path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/>'),
+  tasks: svg('<path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/>'),
+  calendar: svg('<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>'),
+  note: svg('<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h5"/>'),
+  settings: svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
+  chat: svg('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'),
+  refresh: svg('<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>'),
+  sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
+  moon: svg('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>'),
+  alert: svg('<path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>'),
+  sync: svg('<path d="M21 2v6h-6M3 22v-6h6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 12a9 9 0 0 1-15 6.7L3 16"/>'),
+  send: svg('<path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/>'),
+  close: svg('<path d="M18 6L6 18M6 6l12 12"/>'),
+  graph: svg('<circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="5" r="2.5"/><circle cx="12" cy="13" r="3"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M7 7.5l3 3.5M17 6.5l-3.2 4.3M7 17.5l3-2.3M17 17.5l-3-2.3"/>'),
+  key: svg('<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2L20 3M16 7l3 3M14 9l2 2"/>'),
+  expand: svg('<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>'),
+  copy: svg('<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'),
+  spark: svg('<path d="M12 3l1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2z"/>'),
+};
+
+const GRAPH = { sim: null, svg: null, zoom: null, node: null, link: null, label: null, adj: new Map(), nodes: [], k: 1, W: 0, H: 0, fitted: false };
+const LINK_DIST = { member: 150, works_at: 70, belongs_to: 120, attends: 60, mentions: 75, in_project: 34, topic: 95,
+  delegated_to: 40, promised_to: 40, promised: 70, invited: 55, series: 50, agenda: 90, contact: 95 };
+const LINK_COLOR = { member: '#a5b4fc', works_at: '#38bdf8', belongs_to: '#f59e0b', attends: '#a78bfa', mentions: '#a78bfa',
+  in_project: '#34d399', topic: '#f472b6', delegated_to: '#facc15', promised_to: '#f472b6', promised: '#f472b6',
+  invited: '#22d3ee', series: '#22d3ee', agenda: '#22d3ee', contact: '#64748b' };
+const trunc = (t, n) => (t && t.length > n ? t.slice(0, n - 1) + '…' : t);
+
+function store(key, value) {
+  try {
+    if (value === undefined) return JSON.parse(localStorage.getItem(key) || 'null');
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) { return null; }
+}
+
+function workspace() {
+  return {
+    icons: ICONS,
+    nav: [
+      { id: 'today', label: 'Hoy', icon: 'home' },
+      { id: 'tasks', label: 'Tareas', icon: 'tasks', badge: true },
+      { id: 'calendar', label: 'Correo → Calendario', icon: 'calendar', badge: true },
+      { id: 'notes', label: 'Obsidian', icon: 'note' },
+      { id: 'map', label: 'Mapa de relaciones', icon: 'graph' },
+      { id: 'accounts', label: 'Cuentas', icon: 'key', badge: true },
+    ],
+    view: 'today',
+    dark: document.documentElement.classList.contains('dark'),
+    chatOpen: window.innerWidth >= 1280,
+    loading: { today: false, tasks: false, calendar: false, week: false, notes: false, sync: false, map: false, accounts: false, testAll: false },
+    busy: { task: false, event: false, note: false, cal: false }, toasts: [],
+    overview: null, tasks: null, taskTab: 'asana', taskFilter: '',
+    taskTabs: [
+      { id: 'asana', label: 'Asana' }, { id: 'follow_ups', label: 'Seguimientos' },
+      { id: 'my_commitments', label: 'Mis compromisos' }, { id: 'their_commitments', label: 'Me deben' },
+      { id: 'delegations', label: 'Delegaciones' },
+    ],
+    newTask: { title: '', due_date: '', notes: '' },
+    review: null, reviewDays: 7, week: null,
+    newEvent: { title: '', start: '', end: '', location: '', private: false },
+    folder: 'meetings', notes: [], note: null, editing: false, draft: '', noteQuery: '', noteResults: null,
+    peopleNames: [], syncOpen: false, syncDays: 7, syncResult: null, syncPreview: false,
+    messages: [], input: '', thinking: false, models: [], chatModel: store('ws-model') || '',
+    store,
+    graph: null, hiddenTypes: ['task'], selected: null, graphQuery: '', graphFull: false,
+    graphTypes: [
+      { id: 'me', label: 'Yo', color: '#e0e7ff' }, { id: 'org', label: 'Organizaciones', color: '#f59e0b' },
+      { id: 'company', label: 'Empresas', color: '#fb923c' }, { id: 'person', label: 'Personas', color: '#38bdf8' },
+      { id: 'meeting', label: 'Reuniones', color: '#a78bfa' }, { id: 'project', label: 'Proyectos', color: '#34d399' },
+      { id: 'task', label: 'Tareas', color: '#94a3b8' }, { id: 'event', label: 'Eventos', color: '#22d3ee' },
+      { id: 'delegation', label: 'Delegaciones', color: '#facc15' }, { id: 'commitment', label: 'Compromisos', color: '#f472b6' },
+    ],
+    accountsData: null, tests: {}, addOpen: false,
+    newAccount: { family: 'google', account_id: '', client_id: '', client_secret: '' },
+    calendarsData: null, calSettings: null, calForm: { default: '', email: '__default', sources: [] },
+    suggestions: [
+      '¿Qué tengo hoy y qué debería priorizar?',
+      'Resume mis pendientes vencidos',
+      '¿Qué se decidió en las últimas reuniones de PCI?',
+      'Revisa mis correos y dime qué debo agendar',
+    ],
+    todayLabel: new Intl.DateTimeFormat('es-MX', { weekday: 'long', day: 'numeric', month: 'long', timeZone: TZ }).format(new Date()),
+
+    init() {
+      this.messages = store('ws-chat') || [];
+      this.loadModels();
+      const saved = store('ws-view');
+      const hash = location.hash.replace('#', '');
+      this.go(this.nav.some(n => n.id === hash) ? hash : (saved || 'today'));
+      this.$watch('messages', () => store('ws-chat', this.messages.slice(-40)));
+      let resizeTimer = null;
+      window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => { if (this.view === 'map') this.renderGraph(); }, 300);
+      });
+      window.addEventListener('keydown', e => { if (e.key === 'Escape' && this.graphFull) { this.graphFull = false; this.$nextTick(() => this.renderGraph()); } });
+      window.addEventListener('hashchange', () => {
+        const h = location.hash.replace('#', '');
+        if (h && h !== this.view && this.nav.some(n => n.id === h)) this.go(h);
+      });
+    },
+
+    // ---------- helpers ----------
+    async api(path, opts = {}) {
+      const res = await fetch(path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...opts,
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+      });
+      let data = null;
+      try { data = await res.json(); } catch (e) {}
+      if (!res.ok) throw new Error((data && (data.detail || data.error)) || res.statusText);
+      return data;
+    },
+    toast(text, error = false) {
+      const id = Date.now() + Math.random();
+      this.toasts.push({ id, text, error });
+      setTimeout(() => { this.toasts = this.toasts.filter(t => t.id !== id); }, 3500);
+    },
+    toggleTheme() {
+      this.dark = !this.dark;
+      document.documentElement.classList.toggle('dark', this.dark);
+      store('ws-theme', this.dark ? 'dark' : 'light');
+    },
+    go(id) {
+      this.view = id;
+      store('ws-view', id);
+      if (location.hash !== '#' + id) history.replaceState(null, '', '#' + id);
+      if (id === 'today' && !this.overview) this.loadOverview();
+      if (id === 'tasks' && !this.tasks) this.loadTasks();
+      if (id === 'calendar' && !this.week) this.loadWeek();
+      if (id === 'notes' && !this.notes.length) this.loadNotes();
+      if (id === 'map') { if (!this.graph) this.loadGraph(); else this.$nextTick(() => this.renderGraph()); }
+      if (id === 'accounts' && !this.accountsData) this.loadAccounts();
+    },
+    refresh() {
+      ({ today: () => this.loadOverview(), tasks: () => this.loadTasks(),
+         calendar: () => this.loadWeek(), notes: () => this.loadNotes(),
+         map: () => this.loadGraph(), accounts: () => this.loadAccounts() })[this.view]();
+    },
+    errorsFor(view) {
+      if (view === 'today') return this.overview?.errors || [];
+      if (view === 'tasks') return this.tasks?.errors || [];
+      if (view === 'calendar') return [...(this.review?.errors || []), ...(this.week?.errors || [])];
+      if (view === 'map') return this.graph?.errors || [];
+      return [];
+    },
+    time(iso) { return new Intl.DateTimeFormat('es-MX', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: TZ }).format(new Date(iso)); },
+    shortDate(d) {
+      if (!d) return '';
+      const date = d.length === 10 ? new Date(d + 'T12:00:00') : new Date(d);
+      return new Intl.DateTimeFormat('es-MX', { day: 'numeric', month: 'short', timeZone: TZ }).format(date);
+    },
+    dayLabel(day) { return new Intl.DateTimeFormat('es-MX', { weekday: 'long', day: 'numeric', month: 'short' }).format(new Date(day + 'T12:00:00')); },
+    todayIso() { return new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date()); },
+    isPast(iso) { return new Date(iso) < new Date(); },
+    isOverdue(item) { return item.is_overdue || (item.due_date && item.due_date.slice(0, 10) < this.todayIso()); },
+    md(text) { return DOMPurify.sanitize(marked.parse(text || '', { breaks: true })); },
+    badge(id) {
+      if (id === 'tasks' && this.overview) return (this.overview.tasks_overdue.length + this.overview.follow_ups_overdue.length) || '';
+      if (id === 'accounts') return Object.values(this.tests).filter(t => t.ok === false).length || '';
+      if (id === 'calendar') return (this.review ? this.review.proposals.filter(p => !p.already_on_calendar).length : this.overview?.calendar_review?.pending?.length) || '';
+      return '';
+    },
+
+    // ---------- today ----------
+    async loadOverview() {
+      this.loading.today = true;
+      try { this.overview = await this.api('/api/ws/overview'); }
+      catch (e) { this.toast('No se pudo cargar el resumen: ' + e.message, true); }
+      finally { this.loading.today = false; }
+    },
+    greeting() {
+      const h = Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: TZ }).format(new Date()));
+      return (h < 12 ? 'Buenos días' : h < 19 ? 'Buenas tardes' : 'Buenas noches') + ', Gonzalo';
+    },
+    overviewLine() {
+      const o = this.overview;
+      if (!o) return 'Preparando tu día…';
+      const upcoming = o.events.filter(e => !this.isPast(e.end));
+      const next = upcoming.find(e => !e.all_day);
+      return `${o.events.length} eventos hoy` + (next ? ` · siguiente: ${next.title} a las ${this.time(next.start)}` : ' · sin más reuniones');
+    },
+    stats() {
+      const o = this.overview || {};
+      return [
+        { label: 'Reuniones hoy', value: o.events?.length ?? '–', hint: 'en todos tus calendarios', tone: '', go: 'calendar' },
+        { label: 'Tareas vencidas', value: o.tasks_overdue?.length ?? '–', hint: `${o.tasks_open ?? 0} abiertas en Asana`, tone: o.tasks_overdue?.length ? 'text-rose-600 dark:text-rose-400' : '', go: 'tasks' },
+        { label: 'Seguimientos vencidos', value: o.follow_ups_overdue?.length ?? '–', hint: `${o.follow_ups_open ?? 0} pendientes`, tone: o.follow_ups_overdue?.length ? 'text-amber-600 dark:text-amber-400' : '', go: 'tasks' },
+        { label: 'Para agendar', value: o.calendar_review ? o.calendar_review.pending.length : '?', hint: o.calendar_review ? 'de tus correos' : 'revisa tus correos', tone: '', go: 'calendar' },
+      ];
+    },
+    attention() {
+      const o = this.overview;
+      if (!o) return [];
+      return [
+        ...o.tasks_today.map(t => ({ key: 't' + t.id, kind: 'asana', id: t.id, account: t.account, title: t.title, meta: 'Asana · vence hoy', overdue: false })),
+        ...o.tasks_overdue.map(t => ({ key: 't' + t.id, kind: 'asana', id: t.id, account: t.account, title: t.title, meta: 'Asana · venció ' + this.shortDate(t.due_date), overdue: true })),
+        ...o.commitments_overdue.map(c => ({ key: 'c' + c.id, kind: 'commitment', id: c.id, title: c.title, meta: 'Compromiso' + (c.person ? ' con ' + c.person : ''), overdue: true })),
+        ...o.follow_ups_overdue.map(f => ({ key: 'f' + f.id, kind: 'follow_up', id: f.id, title: f.title, meta: 'Seguimiento' + (f.person ? ' · ' + f.person : ''), overdue: true })),
+        ...o.delegations_overdue.map(d => ({ key: 'd' + d.id, kind: 'delegation', id: d.id, title: d.title, meta: 'Delegado a ' + (d.person || '—'), overdue: true })),
+      ];
+    },
+    async completeAttention(t) {
+      try {
+        if (t.kind === 'asana') await this.api(`/api/ws/tasks/${t.id}/complete?account=${encodeURIComponent(t.account || '')}`, { method: 'POST' });
+        else await this.api(`/api/ws/items/${t.kind}/${t.id}/complete`, { method: 'POST' });
+        const o = this.overview;
+        ['tasks_today', 'tasks_overdue', 'commitments_overdue', 'follow_ups_overdue', 'delegations_overdue']
+          .forEach(k => { o[k] = o[k].filter(x => x.id !== t.id); });
+        this.tasks = null;
+        this.toast('Completado ✓');
+      } catch (e) { this.toast(e.message, true); }
+    },
+
+    // ---------- tasks ----------
+    async loadTasks() {
+      this.loading.tasks = true;
+      try { this.tasks = await this.api('/api/ws/tasks'); }
+      catch (e) { this.toast('No se pudieron cargar las tareas: ' + e.message, true); }
+      finally { this.loading.tasks = false; }
+    },
+    taskCount(tab) { const l = this.tasks?.[tab === 'asana' ? 'tasks' : tab]; return l ? l.length : ''; },
+    taskList() {
+      if (!this.tasks) return [];
+      const list = this.tasks[this.taskTab === 'asana' ? 'tasks' : this.taskTab] || [];
+      const q = this.taskFilter.toLowerCase();
+      return q ? list.filter(i => JSON.stringify(i).toLowerCase().includes(q)) : list;
+    },
+    async completeTaskItem(item) {
+      const kind = { asana: null, follow_ups: 'follow_up', my_commitments: 'commitment', their_commitments: 'commitment', delegations: 'delegation' }[this.taskTab];
+      try {
+        if (!kind) await this.api(`/api/ws/tasks/${item.id}/complete?account=${encodeURIComponent(item.account || '')}`, { method: 'POST' });
+        else await this.api(`/api/ws/items/${kind}/${item.id}/complete`, { method: 'POST' });
+        const key = this.taskTab === 'asana' ? 'tasks' : this.taskTab;
+        this.tasks[key] = this.tasks[key].filter(i => i.id !== item.id);
+        this.overview = null;
+        this.toast('Completado ✓');
+      } catch (e) { this.toast(e.message, true); }
+    },
+    async createTask(payload) {
+      const body = payload || { ...this.newTask, due_date: this.newTask.due_date || null, notes: this.newTask.notes || null };
+      this.busy.task = true;
+      try {
+        const r = await this.api('/api/ws/tasks', { method: 'POST', body });
+        if (this.tasks) this.tasks.tasks.unshift(r.task);
+        if (!payload) this.newTask = { title: '', due_date: '', notes: '' };
+        this.toast('Tarea creada en Asana');
+        return r;
+      } finally { this.busy.task = false; }
+    },
+
+    // ---------- calendar ----------
+    async loadWeek() {
+      this.loading.week = true;
+      try { this.week = await this.api('/api/ws/events?days=7'); }
+      catch (e) { this.toast(e.message, true); }
+      finally { this.loading.week = false; }
+    },
+    weekGroups() {
+      const groups = {};
+      for (const ev of (this.week?.events || [])) {
+        const day = ev.start.slice(0, 10);
+        (groups[day] = groups[day] || []).push(ev);
+      }
+      return groups;
+    },
+    async reviewEmails() {
+      this.loading.calendar = true;
+      try {
+        this.review = await this.api(`/api/ws/calendar-requests?days_back=${this.reviewDays}`);
+        if (this.overview) this.overview.calendar_review = { pending: this.review.proposals.filter(p => !p.already_on_calendar) };
+      } catch (e) { this.toast(e.message, true); }
+      finally { this.loading.calendar = false; }
+    },
+    async addProposal(p) {
+      p._busy = true;
+      try {
+        await this.api('/api/ws/calendar-requests/add', { method: 'POST', body: {
+          message_id: p.message_id, account: p.account, title: p.title, start: p.start, end: p.end || null,
+          location: p.location || null, notes: p.notes || null, sender: p.from, subject: p.subject, web_link: p.web_link } });
+        this.review.proposals = this.review.proposals.filter(x => x !== p);
+        this.week = null; this.loadWeek();
+        this.toast('Agregado al calendario de Paycode');
+      } catch (e) { this.toast(e.message, true); }
+      finally { p._busy = false; }
+    },
+    async dismissProposal(p) {
+      p._busy = true;
+      try {
+        await this.api('/api/ws/calendar-requests/dismiss', { method: 'POST', body: { message_id: p.message_id, account: p.account } });
+        this.review.proposals = this.review.proposals.filter(x => x !== p);
+      } catch (e) { this.toast(e.message, true); }
+    },
+    async createEvent(payload) {
+      const body = payload || { ...this.newEvent, end: this.newEvent.end || null, location: this.newEvent.location || null };
+      this.busy.event = true;
+      try {
+        const r = await this.api('/api/ws/events', { method: 'POST', body });
+        if (!payload) this.newEvent = { title: '', start: '', end: '', location: '', private: false };
+        this.week = null; if (this.view === 'calendar') this.loadWeek();
+        this.toast('Evento creado');
+        return r;
+      } finally { this.busy.event = false; }
+    },
+
+    // ---------- notes ----------
+    async loadNotes() {
+      this.loading.notes = true;
+      try {
+        const r = await this.api(`/api/ws/notes?folder=${this.folder}`);
+        this.notes = r.notes;
+        if (!this.peopleNames.length) {
+          try { this.peopleNames = (await this.api('/api/ws/notes?folder=people')).notes.map(n => n.name); } catch (e) {}
+        }
+      } catch (e) { this.toast(e.message, true); this.notes = []; }
+      finally { this.loading.notes = false; }
+    },
+    setFolder(f) { this.folder = f; this.note = null; this.noteResults = null; this.editing = false; this.loadNotes(); },
+    async openNote(name, folder) {
+      if (this.view !== 'notes') this.go('notes');
+      if (folder && folder !== this.folder) { this.folder = folder; this.loadNotes(); }
+      try {
+        this.note = await this.api(`/api/ws/notes/${encodeURIComponent(name)}?folder=${this.folder}`);
+        this.editing = false;
+      } catch (e) { this.toast(e.message, true); }
+    },
+    renderNote(text) {
+      const linked = (text || '').replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (m, target, label) =>
+        `<a href="#" data-note="${target.replace(/"/g, '&quot;')}">${label || target}</a>`);
+      return DOMPurify.sanitize(marked.parse(linked), { ADD_ATTR: ['data-note'] });
+    },
+    noteLinkClick(ev) {
+      const a = ev.target.closest('a[data-note]');
+      if (!a) return;
+      ev.preventDefault();
+      const name = a.dataset.note.split('/').pop();
+      this.openNote(name, this.peopleNames.includes(name) ? 'people' : 'meetings');
+    },
+    async searchNotes() {
+      if (!this.noteQuery.trim()) { this.noteResults = null; return; }
+      try { this.noteResults = (await this.api(`/api/ws/notes/search?folder=${this.folder}&q=${encodeURIComponent(this.noteQuery)}`)).results; }
+      catch (e) { this.toast(e.message, true); }
+    },
+    async saveNote() {
+      this.busy.note = true;
+      try {
+        await this.api(`/api/ws/notes/${encodeURIComponent(this.note.name)}?folder=${this.folder}`, { method: 'PUT', body: { content: this.draft } });
+        this.note.content = this.draft; this.editing = false;
+        this.toast('Nota guardada en Obsidian');
+      } catch (e) { this.toast(e.message, true); }
+      finally { this.busy.note = false; }
+    },
+    async syncNotes(dryRun) {
+      this.loading.sync = true; this.syncResult = null;
+      try {
+        this.syncResult = await this.api('/api/ws/notes/sync', { method: 'POST', body: { days_back: this.syncDays, dry_run: dryRun } });
+        this.syncPreview = dryRun && !this.syncResult.error;
+        if (!dryRun) { this.syncPreview = false; this.loadNotes(); this.toast('Notas actualizadas en Obsidian'); }
+      } catch (e) { this.toast(e.message, true); }
+      finally { this.loading.sync = false; }
+    },
+    askAboutNote() {
+      this.chatOpen = true;
+      this.input = `Resume los puntos clave y pendientes de la nota "${this.note.name}".`;
+      this.$nextTick(() => this.$refs.chatInput.focus());
+    },
+
+
+    // ---------- relationship map ----------
+    async loadGraph() {
+      this.loading.map = true;
+      try {
+        this.graph = await this.api('/api/ws/graph');
+        GRAPH.fitted = false;
+        this.$nextTick(() => this.renderGraph());
+      } catch (e) { this.toast('No se pudo construir el mapa: ' + e.message, true); }
+      finally { this.loading.map = false; }
+    },
+    typeColor(n) {
+      if ((n.type === 'task' || n.type === 'delegation' || n.type === 'commitment') && n.meta?.overdue === true) return '#f43f5e';
+      return (this.graphTypes.find(t => t.id === n.type) || {}).color || '#94a3b8';
+    },
+    typeLabel(t) {
+      return ({ me: 'Tú', org: 'Organización', company: 'Empresa', person: 'Persona', meeting: 'Reunión', project: 'Proyecto',
+        task: 'Tarea', event: 'Evento', delegation: 'Delegación', commitment: 'Compromiso' })[t] || t;
+    },
+    toggleType(id) {
+      this.hiddenTypes = this.hiddenTypes.includes(id) ? this.hiddenTypes.filter(t => t !== id) : [...this.hiddenTypes, id];
+      this.renderGraph();
+    },
+    metaRows(n) {
+      const m = n.meta || {}, rows = [];
+      const fmt = { emails: 'Correo', interactions: 'Correos', sent: 'Enviados por ti', last_contact: 'Último contacto',
+        meetings: 'Reuniones registradas', latest: 'Última reunión', open_tasks: 'Tareas abiertas', due_date: 'Vence',
+        project: 'Proyecto', location: 'Lugar', org_type: 'Tipo', domain: 'Dominio' };
+      for (const [k, label] of Object.entries(fmt)) {
+        if (m[k] === undefined || m[k] === null || m[k] === '') continue;
+        rows.push([label, Array.isArray(m[k]) ? m[k].join(', ') : (k === 'due_date' || k === 'latest' || k === 'last_contact') ? this.shortDate(String(m[k]).slice(0, 10)) : m[k]]);
+      }
+      if (m.start) rows.push(['Inicio', this.dayLabel(m.start.slice(0, 10)) + ' ' + this.time(m.start)]);
+      if (n.type === 'project' && m.overdue) rows.push(['Vencidas', m.overdue]);
+      if (m.overdue === true) rows.push(['Estado', 'Vencida']);
+      rows.push(['Conexiones', n.degree]);
+      return rows;
+    },
+    neighborGroups(sel) {
+      if (!sel || !this.graph) return [];
+      const byId = new Map(Alpine.raw(this.graph).nodes.map(n => [n.id, n]));
+      const groups = {};
+      for (const id of (GRAPH.adj.get(sel.id) || [])) {
+        const n = byId.get(id); if (!n) continue;
+        (groups[n.type] = groups[n.type] || []).push(n);
+      }
+      const order = this.graphTypes.map(t => t.id);
+      return Object.entries(groups).sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
+        .map(([type, items]) => ({ type, items: items.sort((a, b) => b.degree - a.degree) }));
+    },
+    select(id) {
+      const n = Alpine.raw(this.graph).nodes.find(x => x.id === id);
+      this.selected = n ? JSON.parse(JSON.stringify(n)) : null;
+      this.highlight(id);
+    },
+    clearSelection() { this.selected = null; this.highlight(null); },
+    highlight(id) {
+      if (!GRAPH.node) return;
+      if (!id) {
+        GRAPH.node.style('opacity', 1);
+        GRAPH.link.attr('stroke-opacity', 0.22);
+        GRAPH.focus = null;
+      } else {
+        const near = new Set([id, ...(GRAPH.adj.get(id) || [])]);
+        GRAPH.node.style('opacity', d => near.has(d.id) ? 1 : 0.1);
+        GRAPH.link.attr('stroke-opacity', l => (l.source.id === id || l.target.id === id) ? 0.85 : 0.03);
+        GRAPH.focus = near;
+      }
+      this.updateLabels();
+    },
+    updateLabels() {
+      if (!GRAPH.label) return;
+      const k = GRAPH.k, focus = GRAPH.focus;
+      GRAPH.label.style('opacity', d => {
+        if (focus) return focus.has(d.id) ? 1 : 0;
+        if (['me', 'org', 'company', 'project', 'meeting'].includes(d.type)) return 1;
+        if (d.type === 'person' && d.degree >= 6) return 1;
+        return k > 1.6 ? 1 : 0;
+      });
+    },
+    focusNode(id) {
+      if (this.view !== 'map') this.go('map');
+      const raw = this.graph && Alpine.raw(this.graph).nodes.find(n => n.id === id);
+      if (!raw) return;
+      if (this.hiddenTypes.includes(raw.type)) {
+        this.hiddenTypes = this.hiddenTypes.filter(t => t !== raw.type);
+        this.renderGraph();
+        setTimeout(() => this.focusNode(id), 900);
+        return;
+      }
+      const n = GRAPH.nodes.find(x => x.id === id);
+      if (!n || !GRAPH.svg) return;
+      const t = d3.zoomIdentity.translate(GRAPH.W / 2 - 150, GRAPH.H / 2).scale(1.7).translate(-n.x, -n.y);
+      GRAPH.svg.transition().duration(750).call(GRAPH.zoom.transform, t);
+      this.select(id);
+    },
+    searchGraph() {
+      const q = this.graphQuery.toLowerCase().trim();
+      if (!q || !this.graph) return;
+      const n = Alpine.raw(this.graph).nodes.find(x => x.label.toLowerCase() === q)
+        || Alpine.raw(this.graph).nodes.find(x => x.label.toLowerCase().includes(q));
+      if (n) this.focusNode(n.id); else this.toast('No encontré "' + this.graphQuery + '" en el mapa', true);
+    },
+    askAboutNode(n) {
+      this.send(`¿Qué sabes de ${this.typeLabel(n.type).toLowerCase()} "${n.label}"? Resume cómo se conecta con mis reuniones, tareas y pendientes.`);
+    },
+    fitGraph(duration = 600) {
+      if (!GRAPH.nodes.length || !GRAPH.svg) return;
+      if (!duration) { GRAPH.svg.call(GRAPH.zoom.transform, this.fitTransform()); return; }
+      GRAPH.svg.transition().duration(duration).call(GRAPH.zoom.transform, this.fitTransform());
+    },
+    fitTransform() {
+      // Frame the bulk of the graph (5th-95th percentile) so a few far nodes don't shrink it.
+      const q = (arr, p) => { const a = [...arr].sort((m, n) => m - n); return a[Math.min(a.length - 1, Math.max(0, Math.round(p * (a.length - 1))))]; };
+      const xs = GRAPH.nodes.map(n => n.x), ys = GRAPH.nodes.map(n => n.y);
+      const [x0, x1, y0, y1] = [q(xs, 0.04), q(xs, 0.96), q(ys, 0.04), q(ys, 0.96)];
+      const scale = Math.min(1.6, 0.85 / Math.max((x1 - x0 + 1) / GRAPH.W, (y1 - y0 + 1) / (GRAPH.H - 110)));
+      return d3.zoomIdentity.translate(GRAPH.W / 2, GRAPH.H / 2 + 30).scale(scale).translate(-(x0 + x1) / 2, -(y0 + y1) / 2);
+    },
+    renderGraph() {
+      const el = this.$refs.graph;
+      if (!el || !this.graph || typeof d3 === 'undefined') return;
+      if (GRAPH.sim) GRAPH.sim.stop();
+      el.innerHTML = '';
+      const W = el.clientWidth || 900, H = el.clientHeight || 600;
+      Object.assign(GRAPH, { W, H, k: 1, focus: null });
+      const data = Alpine.raw(this.graph), hidden = new Set(this.hiddenTypes);
+      const nodes = data.nodes.filter(n => !hidden.has(n.type)).map(n => ({ ...n,
+        x: W / 2 + (Math.random() - 0.5) * 80, y: H / 2 + (Math.random() - 0.5) * 80 }));
+      const ids = new Set(nodes.map(n => n.id));
+      const links = data.links.filter(l => ids.has(l.source) && ids.has(l.target)).map(l => ({ ...l }));
+      GRAPH.adj = new Map(nodes.map(n => [n.id, new Set()]));
+      links.forEach(l => { GRAPH.adj.get(l.source).add(l.target); GRAPH.adj.get(l.target).add(l.source); });
+      const me = nodes.find(n => n.type === 'me');
+      if (me) { me.fx = W / 2; me.fy = H / 2; }
+      const r = d => 3 + d.weight * 2.3;
+
+      const sim = d3.forceSimulation(nodes)
+        .force('link', d3.forceLink(links).id(d => d.id).distance(l => LINK_DIST[l.kind] || 70))
+        .force('charge', d3.forceManyBody().strength(d => -50 - d.weight * 38).distanceMax(520))
+        .force('collide', d3.forceCollide(d => r(d) + 4))
+        .force('x', d3.forceX(W / 2).strength(0.06))
+        .force('y', d3.forceY(H / 2).strength(0.08));
+
+      const svg = d3.select(el).append('svg').attr('width', W).attr('height', H).attr('viewBox', [0, 0, W, H]);
+      const defs = svg.append('defs');
+      const f = defs.append('filter').attr('id', 'glow').attr('x', '-60%').attr('y', '-60%').attr('width', '220%').attr('height', '220%');
+      f.append('feGaussianBlur').attr('stdDeviation', 4).attr('result', 'blur');
+      const merge = f.append('feMerge'); merge.append('feMergeNode').attr('in', 'blur'); merge.append('feMergeNode').attr('in', 'SourceGraphic');
+      const rootG = svg.append('g');
+      const zoom = d3.zoom().scaleExtent([0.15, 5]).on('zoom', e => {
+        rootG.attr('transform', e.transform); GRAPH.k = e.transform.k; this.updateLabels();
+      });
+      svg.call(zoom).on('dblclick.zoom', null);
+      svg.on('click', e => { if (e.target === svg.node()) this.clearSelection(); });
+
+      const link = rootG.append('g').attr('stroke-linecap', 'round').selectAll('line').data(links).join('line')
+        .attr('stroke', l => LINK_COLOR[l.kind] || '#64748b').attr('stroke-opacity', 0.22)
+        .attr('stroke-width', l => Math.min(0.7 + Math.log1p(l.weight) * 0.8, 4));
+      const drag = d3.drag()
+        .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.25).restart(); d.fx = d.x; d.fy = d.y; })
+        .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+        .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); if (d.type !== 'me') { d.fx = null; d.fy = null; } });
+      const node = rootG.append('g').selectAll('g').data(nodes).join('g').attr('class', 'node').call(drag)
+        .on('mouseenter', (e, d) => this.highlight(d.id))
+        .on('mouseleave', () => this.highlight(this.selected?.id || null))
+        .on('click', (e, d) => { e.stopPropagation(); this.select(d.id); });
+      node.append('circle').attr('r', d => r(d) + 5).attr('fill', d => this.typeColor(d)).attr('opacity', 0.12);
+      node.append('circle').attr('r', r).attr('fill', d => this.typeColor(d)).attr('fill-opacity', 0.92)
+        .attr('stroke', d => d.type === 'me' ? '#eef2ff' : 'rgba(255,255,255,.35)').attr('stroke-width', d => d.type === 'me' ? 3 : 1)
+        .attr('filter', d => (['me', 'org', 'meeting', 'project'].includes(d.type) || d.degree > 8) ? 'url(#glow)' : null);
+      node.filter(d => d.type === 'me').append('text').text(d => d.label.slice(0, 1)).attr('text-anchor', 'middle')
+        .attr('dy', 6).attr('font-size', 18).attr('font-weight', 700).attr('fill', '#1e1b4b').style('stroke', 'none');
+      const label = node.append('text').text(d => trunc(d.label, 30)).attr('text-anchor', 'middle')
+        .attr('dy', d => r(d) + 12).attr('font-size', d => d.type === 'me' ? 13 : ['org', 'project'].includes(d.type) ? 11 : 9.5)
+        .attr('font-weight', d => ['me', 'org', 'project'].includes(d.type) ? 600 : 500).attr('fill', '#e2e8f0');
+
+      sim.on('tick', () => {
+        link.attr('x1', d => d.source.x).attr('y1', d => d.source.y).attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+        node.attr('transform', d => `translate(${d.x},${d.y})`);
+      });
+      Object.assign(GRAPH, { sim, svg, zoom, node, link, label, nodes });
+      // Settle most of the layout before the first paint, then let it breathe.
+      sim.stop();
+      for (let i = 0; i < 220; i++) sim.tick();
+      link.attr('x1', d => d.source.x).attr('y1', d => d.source.y).attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+      node.attr('transform', d => `translate(${d.x},${d.y})`);
+      this.fitGraph(0);
+      sim.alpha(0.12).restart();
+      this.updateLabels();
+      if (this.selected && ids.has(this.selected.id)) setTimeout(() => this.highlight(this.selected.id), 50);
+      else this.selected = null;
+    },
+
+    // ---------- accounts ----------
+    async loadAccounts() {
+      this.loading.accounts = true;
+      try {
+        const [accounts, settings] = await Promise.all([this.api('/api/ws/accounts'), this.api('/api/ws/settings')]);
+        this.accountsData = accounts; this.calSettings = settings;
+        this.initCalForm();
+        this.loadCalendars();
+        this.testAll();
+      } catch (e) { this.toast(e.message, true); }
+      finally { this.loading.accounts = false; }
+    },
+    async loadCalendars() {
+      try { this.calendarsData = await this.api('/api/ws/calendars'); } catch (e) { this.toast(e.message, true); }
+    },
+    calKey(c) { return `${c.provider}|${c.account_id}|${c.calendar_id}`; },
+    initCalForm() {
+      const s = this.calSettings;
+      this.calForm = { default: this.calKey(s.default_calendar), email: s.email_target_is_default ? '__default' : this.calKey(s.email_target), sources: [...s.source_accounts] };
+    },
+    calendarOptions() {
+      const opts = new Map();
+      for (const c of (this.calendarsData?.calendars || [])) {
+        if (!c.can_edit) continue;
+        opts.set(this.calKey(c), { key: this.calKey(c), label: `${c.name}${c.primary ? ' (principal)' : ''} — ${c.account_id} · ${c.provider === 'google' ? 'Google' : 'Outlook'}` });
+      }
+      for (const key of [this.calForm.default, this.calForm.email]) {
+        if (key && key !== '__default' && !opts.has(key)) {
+          const [provider, account, cal] = key.split('|');
+          opts.set(key, { key, label: `${cal === 'primary' ? 'Principal' : cal} — ${account} · ${provider === 'google' ? 'Google' : 'Outlook'}` });
+        }
+      }
+      return [...opts.values()];
+    },
+    async saveCalendarSettings() {
+      const parse = key => { const [provider, account_id, calendar_id] = key.split('|'); return { provider, account_id, calendar_id }; };
+      this.busy.cal = true;
+      try {
+        this.calSettings = await this.api('/api/ws/settings/calendar', { method: 'PUT', body: {
+          default: parse(this.calForm.default),
+          use_default_for_email: this.calForm.email === '__default',
+          email_target: this.calForm.email === '__default' ? null : parse(this.calForm.email),
+          source_accounts: this.calForm.sources } });
+        this.initCalForm();
+        this.toast('Calendarios guardados');
+      } catch (e) { this.toast(e.message, true); }
+      finally { this.busy.cal = false; }
+    },
+    statusText(a) {
+      const t = this.tests[(a.family || a.kind) + a.account_id];
+      if (t && t.detail !== 'Probando…') return t.ok ? 'Funciona' : 'Requiere atención';
+      return { connected: 'Conectada', not_connected: 'Sin conectar', no_client: 'Falta app OAuth', no_refresh: 'Expira pronto' }[a.status] || a.status;
+    },
+    statusClass(a) {
+      const t = this.tests[(a.family || a.kind) + a.account_id];
+      if (t && t.detail !== 'Probando…') return t.ok ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : 'bg-rose-500/15 text-rose-700 dark:text-rose-300';
+      if (a.status === 'connected') return 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300';
+      return 'bg-amber-500/15 text-amber-700 dark:text-amber-300';
+    },
+    async testAccount(kind, account) {
+      const key = kind + account;
+      this.tests[key] = { ok: true, detail: 'Probando…' };
+      try { this.tests[key] = await this.api('/api/ws/accounts/test', { method: 'POST', body: { kind, account_id: account } }); }
+      catch (e) { this.tests[key] = { ok: false, detail: e.message }; }
+    },
+    async testAll() {
+      if (!this.accountsData) return;
+      this.loading.testAll = true;
+      const jobs = [
+        ...this.accountsData.oauth.filter(a => !['no_client', 'not_connected'].includes(a.status)).map(a => this.testAccount(a.family, a.account_id)),
+        ...this.accountsData.tokens.filter(t => t.status === 'connected').map(t => this.testAccount(t.kind, t.account_id)),
+      ];
+      await Promise.allSettled(jobs);
+      this.loading.testAll = false;
+    },
+    connectUrl(a) { return `/auth/${a.family === 'google' ? 'google' : 'microsoft'}/start?account=${encodeURIComponent(a.account_id)}`; },
+    async saveClient(a) {
+      try {
+        await this.api('/api/ws/accounts/oauth-client', { method: 'POST', body: { family: a.family, account_id: a.account_id, client_id: a._client_id || null, client_secret: a._client_secret || null } });
+        this.toast('App OAuth guardada'); this.loadAccounts();
+      } catch (e) { this.toast(e.message, true); }
+    },
+    async addAccount() {
+      const n = this.newAccount;
+      try {
+        await this.api('/api/ws/accounts/oauth-client', { method: 'POST', body: { family: n.family, account_id: n.account_id, client_id: n.client_id || null, client_secret: n.client_secret || null } });
+        location.href = this.connectUrl({ family: n.family, account_id: n.account_id.trim().toLowerCase() });
+      } catch (e) { this.toast(e.message, true); }
+    },
+    async saveToken(t) {
+      try {
+        await this.api('/api/ws/accounts/token', { method: 'POST', body: { kind: t.kind, account_id: t.account_id, token: t._token } });
+        t._token = ''; this.toast('Token guardado');
+        await this.testAccount(t.kind, t.account_id);
+      } catch (e) { this.toast(e.message, true); }
+    },
+    async accountAction(action, kind, account, message) {
+      if (!confirm(message)) return;
+      try {
+        await this.api('/api/ws/accounts/' + action, { method: 'POST', body: { kind, account_id: account } });
+        delete this.tests[kind + account];
+        this.toast(action === 'remove' ? 'Credenciales eliminadas' : 'Cuenta desconectada');
+        this.loadAccounts();
+      } catch (e) { this.toast(e.message, true); }
+    },
+    redirectUris() {
+      return [{ label: 'Google', value: location.origin + '/auth/google/callback' }, { label: 'Microsoft', value: location.origin + '/auth/microsoft/callback' }];
+    },
+    copy(value) {
+      try { navigator.clipboard.writeText(value).then(() => this.toast('Copiado')); } catch (e) { this.toast(value); }
+    },
+    // ---------- chat ----------
+    async loadModels() {
+      try {
+        this.models = (await this.api('/api/ws/chat/models')).models || [];
+        if (!this.models.some(m => m.id === this.chatModel)) {
+          this.chatModel = (this.models.find(m => m.default) || this.models[0] || {}).id || '';
+        }
+      } catch (e) { this.models = []; }
+    },
+    conversationTokens() { return this.messages.reduce((n, m) => n + (m.usage?.total_tokens || 0), 0); },
+    fmtTokens(n) { return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); },
+    clearChat() { this.messages = []; },
+    scrollChat() { this.$nextTick(() => { const el = this.$refs.chatScroll; el.scrollTop = el.scrollHeight; }); },
+    async send(text) {
+      const content = (text || this.input).trim();
+      if (!content || this.thinking) return;
+      this.chatOpen = true;
+      this.messages.push({ role: 'user', content });
+      this.input = '';
+      if (this.$refs.chatInput) this.$refs.chatInput.style.height = 'auto';
+      this.thinking = true; this.scrollChat();
+      try {
+        const history = this.messages.map(m => ({ role: m.role, content: m.content }));
+        const r = await this.api('/api/ws/chat', { method: 'POST', body: { messages: history, model: this.chatModel || null } });
+        this.messages.push({ role: 'assistant', content: r.reply, steps: r.steps, actions: r.actions, model: r.model, usage: r.usage });
+      } catch (e) {
+        this.messages.push({ role: 'assistant', content: '⚠️ ' + e.message, steps: [], actions: [] });
+      } finally { this.thinking = false; this.scrollChat(); }
+    },
+    actionLabel(a) {
+      return { create_task: 'Crear tarea en Asana', complete_task: 'Completar tarea de Asana', complete_item: { follow_up: 'Completar seguimiento', commitment: 'Completar compromiso', delegation: 'Completar delegación' }[a.kind] || 'Completar', create_event: 'Crear evento (Paycode)', add_email_event: 'Agendar desde correo', vault_edit: 'Editar nota de Obsidian' }[a.type] || a.type;
+    },
+    actionDetail(a) {
+      if (a.type === 'create_task') return [a.due_date && 'Vence ' + a.due_date, a.notes].filter(Boolean).join(' · ');
+      if (a.type === 'vault_edit') return [a.note.split('/').pop(), a.section && '§ ' + a.section, a.action === 'append' || a.action === 'replace' ? (a.text || '').slice(0, 140) : a.find].filter(Boolean).join(' · ');
+      if (a.type === 'create_event' || a.type === 'add_email_event') return [a.start, a.end && '→ ' + a.end, a.location].filter(Boolean).join(' ');
+      return '';
+    },
+    async runAction(a) {
+      a._busy = true;
+      try {
+        if (a.type === 'create_task') await this.createTask({ title: a.title, notes: a.notes || null, due_date: a.due_date || null });
+        else if (a.type === 'complete_task') await this.api(`/api/ws/tasks/${encodeURIComponent(a.task_id)}/complete?account=${encodeURIComponent(a.account || '')}`, { method: 'POST' });
+        else if (a.type === 'complete_item') await this.api(`/api/ws/items/${a.kind}/${encodeURIComponent(a.item_id)}/complete`, { method: 'POST' });
+        else if (a.type === 'create_event') await this.createEvent({ title: a.title, start: a.start, end: a.end || null, location: a.location || null, description: a.description || null });
+        else if (a.type === 'add_email_event') await this.api('/api/ws/calendar-requests/add', { method: 'POST', body: {
+          message_id: a.message_id, account: a.account, title: a.title, start: a.start, end: a.end || null,
+          location: a.location || null, notes: a.notes || null, sender: a.sender || null, subject: a.subject || null } });
+        else if (a.type === 'vault_edit') {
+          const r = await this.api('/api/ws/vault/edit', { method: 'POST', body: { note: a.note, action: a.action, section: a.section || null, find: a.find || null, text: a.text || null } });
+          if (this.note && r.note && r.note.endsWith('/' + this.note.name + '.md')) this.openNote(this.note.name, this.folder);
+        }
+        a._done = 'Hecho ✓';
+        this.overview = null; this.tasks = null;
+      } catch (e) { a._done = 'Error: ' + e.message; a._error = true; }
+      finally { a._busy = false; this.messages = [...this.messages]; }
+    },
+  };
+}
+</script>
+</body>
+</html>
