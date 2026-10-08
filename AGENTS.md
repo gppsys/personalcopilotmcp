@@ -1,148 +1,95 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+Guidance for coding agents (Codex and others) working in this repository.
 
 ## Project Overview
 
-Executive Copilot is an MCP (Model Context Protocol) server that provides AI assistants with access to an executive's digital workspace. It aggregates data from multiple providers (email, calendar, tasks, documents) and presents a unified interface.
+Executive Copilot gives AI assistants access to an executive's digital workspace: e-mail, calendars, tasks, Slack, and an Obsidian vault of meeting notes. Three faces, one codebase:
 
-**This is not a chat application.** The UI is any MCP-compatible client (Codex Desktop, ChatGPT, Cursor, VS Code).
+1. **MCP server** (~80 tools) for MCP clients (Claude Desktop, Claude Code, Cursor, VS Code…).
+2. **Web workspace** at http://localhost:8090 — agenda, tasks, e-mail→calendar, Obsidian browse/edit/sync, relationship map, accounts, status console, and a chat with confirm-before-write action cards. The older settings panel lives at `/admin`.
+3. **Automation** — APScheduler jobs running in the same process as the workspace.
 
-## Tech Stack
+## Running (Docker first)
 
-- **Python 3.12+**
-- **FastMCP** - MCP server framework
-- **SQLModel** - Database ORM (SQLite dev, PostgreSQL ready)
-- **Pydantic** - Data validation and settings
-- **APScheduler** - Job scheduling
-- **httpx** - Async HTTP client
-- **structlog** - Structured logging
-- **pytest** - Testing
-- **Ruff** - Linting
-- **mypy** - Type checking
-- **uv** - Package management
-
-## Common Commands
+The repo is bind-mounted into the container (`.:/app`), so code, `config/`, credentials and SQLite files are shared with the host. Code changes only need a restart, not a rebuild (rebuild when dependencies change).
 
 ```bash
-# Install dependencies
-uv sync
-uv sync --dev  # Include dev dependencies
+printf 'OBSIDIAN_VAULT_PATH=/abs/path/to/vault\nTZ=America/Mexico_City\n' > .env   # gitignored
+docker compose up -d --build                  # workspace + automation on :8090
+docker compose restart copilot                # pick up code changes
+docker compose --profile http up -d           # + MCP over streamable HTTP on :8091 (no auth, localhost only)
+docker logs -f copilot-admin
 
-# Run MCP server
-uv run copilot mcp
+# Run a job now
+docker exec copilot-admin uv run copilot automation run obsidian_meeting_sync
 
-# Database operations
-uv run copilot db init   # Create tables
-uv run copilot db drop   # Drop tables
-
-# Testing
-uv run pytest                        # Run all tests
-uv run pytest tests/unit/            # Unit tests only
-uv run pytest -k "test_email"        # Pattern match
-uv run pytest --cov                  # With coverage
-
-# Code quality
-uv run ruff check .                  # Lint
-uv run ruff check --fix .            # Lint and fix
-uv run mypy src                      # Type check
-
-# View config
-uv run copilot config
+# Stdio MCP clients run the server inside the container
+docker exec -i copilot-admin /opt/venv/bin/python -m executive_copilot.mcp
 ```
 
-## Architecture Principles
+- OAuth must be started from `http://localhost:8090` so the redirect URI (`/auth/google/callback`) matches what is registered with the provider.
+- `copilot automation run` starts a second scheduler for its lifetime, so other jobs may also fire in that process; for one-off runs prefer the service or the `/api/ws/...` endpoint.
 
-1. **Clean Architecture**: Layers are domain → application → infrastructure
-2. **Providers contain no business logic**: Only data fetching and mapping
-3. **Services orchestrate**: Business logic lives in services
-4. **Domain models are immutable**: Use `model.with_update()` for changes
-5. **Repository pattern**: No direct database access from services
-6. **Configuration over code**: Rules in YAML, not hardcoded
+## Dev Commands
 
-## Key Directories
+```bash
+uv sync --dev
+uv run pytest -q                     # unit tests (fast, offline)
+uv run ruff check src tests          # lint (--fix to autofix)
+uv run mypy src                      # type check
+uv run copilot config                # effective config (secrets excluded)
+```
+
+## Architecture
 
 ```
 src/executive_copilot/
-├── models/      # Domain models (Email, Task, Person, etc.)
-├── providers/   # External system interfaces (email/, calendar/, task/)
-├── services/    # Business logic (EmailService, CalendarService)
-├── context/     # Context Engine (determines info sources)
-├── memory/      # Persistent knowledge store
-├── database/    # SQLModel tables and repositories
-├── automation/  # APScheduler jobs
-├── mcp/         # MCP server and tool definitions
-└── config/      # Configuration loading
+├── admin/        # FastAPI app: workspace (static/workspace.html, Alpine + Tailwind CDN),
+│                 #   workspace_api.py (/api/ws/*), OAuth (oauth.py), encrypted credentials
+├── automation/   # engine.py (APScheduler), jobs.py (JOB_TYPES), run_log.py (persistent run history)
+├── mcp/          # server.py (tools), activity.py (MCP call log in activity.db)
+├── services/     # business logic: workspace, accounts, status, obsidian_notes, vault_index,
+│                 #   email_forward, email_calendar, chat, knowledge_graph, ...
+├── providers/    # email (gmail, outlook), calendar (google, outlook), task (asana),
+│                 #   communication (slack); document/news/search are interfaces only
+├── models/ database/ context/ memory/ config/ tui/
 ```
+
+Principles: providers only fetch and map to domain models (no business logic, never expose external types); services orchestrate; domain models are frozen (`model.with_update()`); repositories for DB access; rules and settings in YAML, secrets never in YAML.
+
+### Key subsystems
+
+- **Accounts & credentials** (`admin/credentials.py`, `services/accounts.py`): Fernet-encrypted files in `config/.credentials/`. OAuth families (google, microsoft) share client and refresh token across sibling records (mail/calendar/docs); a refresh writes the new token to all siblings. Google scopes include `drive.readonly` to read Gemini notes Docs; adding a scope requires reconnecting the account. Listings report only whether a secret exists, never its value.
+- **Gemini → Obsidian meeting notes** (`services/obsidian_notes.py`, job `obsidian_meeting_sync`): sources are Gemini Docs attached to Google Calendar events (Drive export, transcript stripped; transcript-only Docs are summarized from the transcript; Docs where Gemini produced no summary are skipped) with Gemini e-mails as fallback. One note per meeting series with `## YYYY-MM-DD` sections newest-first. Idempotent per (note, date); the job catches up from the newest date already in the vault. Sections with an empty summary are never written, and the summary prompt forbids inventing content.
+- **Vault search** (`services/vault_index.py`): SQLite FTS5 + embeddings (hybrid RRF) in `vault_index.db`, refreshed incrementally. MCP tools follow search-then-read (`vault_overview`, `search_vault`, `read_vault_note` with section, `get_person_context`) to keep token use low. `obsidian.index_exclude` keeps sensitive notes out; secrets are also redacted at index time.
+- **Status console** (`services/status.py`, `/api/ws/status`, `/api/ws/status/checks`, view `#status`): local snapshot (accounts, jobs and run history, data freshness, MCP traffic, events) refreshed every 30 s; live API checks cached for 60 s.
+- **Job run log** (`automation/run_log.py`): every `Job.run()` is persisted to `activity.db` (`job_runs`). Jobs not implemented yet set `placeholder = True`.
 
 ## Adding Features
 
-### New MCP Tool
-```python
-# In src/executive_copilot/mcp/server.py
-@mcp.tool()
-async def new_tool(param: str) -> dict[str, Any]:
-    """Description for AI."""
-    result = await container.service.operation(param)
-    return {"data": result}
-```
-
-### New Provider
-1. Create interface in `providers/{type}/interface.py`
-2. Implement provider class
-3. Register in `providers/base/registry.py`
-4. Add config in `config/providers.yaml`
-
-### New Context Rule
-```yaml
-# In config/context_rules.yaml
-- name: "rule_name"
-  conditions:
-    domain: "example.com"
-  sources: ["memory", "documentation"]
-```
-
-### New Automation Job
-1. Create job class in `automation/jobs.py`
-2. Register in `JOB_TYPES` dict
-3. Configure in `config/automation.yaml`
-
-## Testing Patterns
-
-```python
-# Unit test
-def test_email_model():
-    email = Email(...)
-    assert email.sender_domain == "example.com"
-
-# Async test with fixtures
-@pytest.mark.asyncio
-async def test_repository(db_session):
-    repo = PersonRepository(db_session)
-    result = await repo.get_by_id(id)
-    assert result is not None
-```
+- **MCP tool**: `@mcp.tool()` in `mcp/server.py`; keep outputs compact.
+- **Workspace feature**: route in `admin/workspace_api.py` (config is re-read per request), logic in `services/`, view in `admin/static/workspace.html` (add it to `nav`, `go()` and `refresh()`). It must work in light and dark themes and at phone width.
+- **Provider**: interface in `providers/{type}/interface.py`, implementation, register in `providers/base/registry.py`, account under `provider_accounts` in `config/organizations.yaml`.
+- **Automation job**: class in `automation/jobs.py`, add to `JOB_TYPES`, schedule in `config/automation.yaml`. Report `FAILED` (or errors in `details`) when nothing could be read, never a silent "0 items".
+- **Calendar writes** stay review-first: propose, then confirm.
 
 ## Configuration
 
-- Base: `config/config.yaml`
-- Organizations: `config/organizations.yaml`
-- Context rules: `config/context_rules.yaml`
-- Automation: `config/automation.yaml`
-- Local overrides: `config/config.local.yaml` (gitignored)
-- Environment: `COPILOT_` prefix (e.g., `COPILOT_DATABASE__HOST`)
+- Load order: `config/config.yaml`, then `automation.yaml`, `context_rules.yaml`, `email_forward_rules.yaml`, `organizations.yaml`, and finally `config.local.yaml` and `ui_settings.yaml`.
+- Personal files are gitignored and have `*.example.yaml` templates: `config.local.yaml`, `organizations.yaml`, `context_rules.yaml`, `email_forward_rules.yaml`. `ui_settings.yaml` is written by the workspace.
+- `.env`: `OBSIDIAN_VAULT_PATH` (mounted at the same absolute path in the container) and `TZ`. Environment overrides use the `COPILOT_` prefix (e.g. `COPILOT_DATABASE__HOST`).
+- Runtime files at the repo root (gitignored): `executive_copilot.db`, `activity.db` (MCP activity + job runs), `vault_index.db`, `briefing_cache.json`, `dashboard_done_items.json`.
 
-## Current Sprint Status
+## Testing Patterns
 
-**Sprint 1 Complete**: Architecture foundation built. All interfaces defined, no provider implementations yet.
-
-**Next**: Sprint 2 - Outlook Email Provider implementation
+- Unit tests are pure and offline: `tmp_path` for vault/DB files, `SimpleNamespace` for config.
+- HTTP: patch the module's `httpx.AsyncClient` with one using `httpx.MockTransport` (see `tests/unit/test_gmail_provider.py`).
+- Providers created inside services: monkeypatch the class in its module (see `FakeCalendar` in `tests/unit/test_obsidian_notes.py`).
+- Async tests use `@pytest.mark.asyncio`.
 
 ## Code Style
 
-- Use async/await for all I/O
-- Type hints on all functions
-- Domain models are frozen (immutable)
-- Providers map to domain models, never expose external types
-- Services use dependency injection via ServiceContainer
-- Configuration in YAML, secrets in environment variables
+- async/await for all I/O; type hints everywhere; Ruff and mypy clean.
+- Match the surrounding code: comment density, naming, Spanish for user-facing UI text, English for code and logs.
+- Keep personal data, credentials and vault content out of commits.
