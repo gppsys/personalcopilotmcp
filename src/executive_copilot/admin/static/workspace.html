@@ -886,7 +886,8 @@ function workspace() {
       if (id === 'today' && !this.overview) this.loadOverview();
       if (id === 'tasks' && !this.tasks) this.loadTasks();
       if (id === 'calendar' && !this.week) this.loadWeek();
-      if (id === 'notes' && !this.notes.length) this.loadNotes();
+      // Notes change behind the page (scheduled Gemini sync, Obsidian edits): always re-read.
+      if (id === 'notes') this.loadNotes();
       if (id === 'map') { if (!this.graph) this.loadGraph(); else this.$nextTick(() => this.renderGraph()); }
       if (id === 'accounts' && !this.accountsData) this.loadAccounts();
     },
