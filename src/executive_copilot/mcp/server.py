@@ -3964,7 +3964,9 @@ Keep it concise and actionable. Focus on what's most important for this specific
 
         Call without arguments first to see what exists (cheap). With a
         folder (e.g. "Personas", "proyectos", "Reuniones", "SAFE") it lists
-        that folder's notes.
+        that folder's notes. folder="GitHub" lists the company's code
+        repositories: one card per repo saying what it does, its stack and
+        integrations (read it with read_vault_note).
 
         Args:
             folder: Optional folder to list
@@ -3979,7 +3981,7 @@ Keep it concise and actionable. Focus on what's most important for this specific
 
     @mcp.tool()
     async def search_vault(query: str, folder: str | None = None, limit: int = 8) -> dict[str, Any]:
-        """Search the Obsidian vault (meetings, people, projects, architecture docs).
+        """Search the Obsidian vault and the GitHub repos' docs (meetings, people, projects, architecture, code docs).
 
         Token-efficient: returns short snippets with the note and section they
         come from. Read more with read_vault_note(note, section) only when
@@ -3988,7 +3990,7 @@ Keep it concise and actionable. Focus on what's most important for this specific
 
         Args:
             query: Words to find, e.g. "multiadquirencia hyperswitch" or "PCI auditoria"
-            folder: Optional folder filter ("Reuniones", "Personas", "proyectos", "SAFE"...)
+            folder: Optional folder filter ("Reuniones", "Personas", "proyectos", "SAFE", "GitHub", or a repo name)
             limit: Max sections (default 8, max 20)
 
         Returns:

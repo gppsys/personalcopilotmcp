@@ -416,6 +416,50 @@ class ObsidianMeetingSyncJob(Job):
         )
 
 
+class GitHubDocsSyncJob(Job):
+    """Mirror GitHub repository docs and index them with the vault."""
+
+    async def execute(self) -> JobResult:
+        """Sync changed repositories, then index and embed the new docs."""
+        from executive_copilot.services.github_docs import GitHubDocsSync
+        from executive_copilot.services.vault_index import build_embedder, build_index
+
+        started_at = datetime.utcnow()
+        config = self._container.config
+        if not config.github_docs.enabled:
+            return JobResult(job_name=self.name, status=JobStatus.SKIPPED, started_at=started_at,
+                             details={"reason": "github_docs.enabled is false"})
+
+        ai_service = None
+        if self._settings.get("summarize", True):
+            try:
+                ai_service = self._container.ai
+            except Exception as e:
+                self._logger.warning("AI unavailable, cards without summary", error=str(e))
+
+        sync = GitHubDocsSync(config, self._container.credential_manager, ai_service)
+        stats = await sync.sync(force=self._settings.get("force", False))
+        if "error" in stats:
+            return JobResult(job_name=self.name, status=JobStatus.FAILED, started_at=started_at,
+                             error_message=stats["error"])
+
+        # Index now (and embed) so the first search after a sync is not the slow one.
+        index = build_index(config)
+        stats["index"] = index.refresh(force=True)
+        embedder = build_embedder(config)
+        if embedder is not None:
+            stats["embedded"] = await index.embed_missing(embedder)
+            stats["embedding_tokens"] = embedder.tokens_used
+
+        return JobResult(
+            job_name=self.name,
+            status=JobStatus.COMPLETED,
+            started_at=started_at,
+            items_processed=stats["files_written"],
+            details=stats,
+        )
+
+
 class CommitmentDetectionJob(Job):
     """Job for detecting commitments from emails and transcripts."""
 
@@ -580,4 +624,5 @@ JOB_TYPES: dict[str, type[Job]] = {
     "delegation_detection": DelegationDetectionJob,
     "email_forward": EmailForwardJob,
     "obsidian_meeting_sync": ObsidianMeetingSyncJob,
+    "github_docs_sync": GitHubDocsSyncJob,
 }

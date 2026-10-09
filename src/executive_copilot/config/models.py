@@ -304,6 +304,27 @@ class ObsidianConfig(BaseModel):
     )
 
 
+class GitHubDocsConfig(BaseModel):
+    """Markdown docs of GitHub repositories, mirrored locally and searchable with the vault.
+
+    The token is stored in Cuentas (kind "github"); a fine-grained token with
+    read-only Contents and Metadata on the organization is enough.
+    """
+
+    enabled: bool = Field(default=False, description="Mirror and index repository docs")
+    orgs: list[str] = Field(default_factory=list, description="Organizations whose repositories are read")
+    account: str = Field(default="default", description="Credential account holding the GitHub token")
+    include_repos: list[str] = Field(default_factory=list, description="Only these repositories (empty = all)")
+    exclude_repos: list[str] = Field(default_factory=list, description="Repositories to skip (e.g. forks, copies)")
+    include_archived: bool = Field(default=False, description="Also read archived repositories")
+    exclude_paths: list[str] = Field(
+        default_factory=list, description="Extra glob patterns (repo-relative) never mirrored"
+    )
+    max_file_kb: int = Field(default=300, description="Skip larger markdown files")
+    cache_dir: str = Field(default="github_docs", description="Local mirror of the docs (gitignored)")
+    summarize: bool = Field(default=True, description="Write an AI summary of what each repository does")
+
+
 class CalendarDefaultsConfig(BaseModel):
     """Where new events go when the caller does not name a calendar."""
 
@@ -394,6 +415,7 @@ class AppConfig(BaseSettings):
 
     # Workspace integrations
     obsidian: ObsidianConfig = Field(default_factory=ObsidianConfig)
+    github_docs: GitHubDocsConfig = Field(default_factory=GitHubDocsConfig)
     calendar_defaults: CalendarDefaultsConfig = Field(default_factory=CalendarDefaultsConfig)
     email_calendar: EmailCalendarConfig = Field(default_factory=EmailCalendarConfig)
 

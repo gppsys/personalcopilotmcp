@@ -206,7 +206,8 @@ class StatusService:
         for tok in listing["tokens"]:
             ptype, pname, _ = TOKEN_SERVICES[tok["kind"]]
             connected = tok["status"] == "connected"
-            if not connected and not tok["used_by"]:
+            required = tok["used_by"] or (tok["kind"] == "github" and self.config.github_docs.enabled)
+            if not connected and not required:
                 continue  # optional integration nobody configured: not a problem
             out.append({
                 "key": f"{tok['kind']}:{tok['account_id']}",
@@ -373,6 +374,9 @@ class StatusService:
                 "metrics": counts | {"Tamaño": _size(index_path)},
             })
 
+        if self.config.github_docs.enabled:
+            items.append(self._github_docs(now))
+
         for key, label, path in (
             ("db", "Base de datos", Path(self.config.database.name)),
             ("activity", "Registro de actividad", _PROJECT_ROOT / "activity.db"),
@@ -387,6 +391,28 @@ class StatusService:
                     "metrics": {"Tamaño": _size(path)},
                 })
         return {"items": items, "latest_meeting": latest_meeting}
+
+    def _github_docs(self, now: datetime) -> dict[str, Any]:
+        from executive_copilot.services.github_docs import GitHubDocsSync
+
+        info = GitHubDocsSync(self.config, self.cm).status()
+        last = _parse(info["last_sync"])
+        if last is None:
+            health, detail = PENDING, "Aún no se sincroniza"
+        elif info["last_error"]:
+            health, detail = WARN, f"Último sync con errores: {info['last_error'][:160]}"
+        elif now - last > timedelta(days=4):
+            health, detail = WARN, f"Sin sincronizar desde hace {(now - last).days} días"
+        else:
+            health, detail = OK, f"{', '.join(self.config.github_docs.orgs)} · {info['repos']} repositorios"
+        return {
+            "key": "github",
+            "name": "Docs de GitHub",
+            "health": health,
+            "detail": detail,
+            "updated_at": info["last_sync"],
+            "metrics": {"Repositorios": info["repos"], "Documentos": info["files"], "Resúmenes IA": info["summaries"]},
+        }
 
     # --- MCP --------------------------------------------------------------------
 

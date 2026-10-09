@@ -16,6 +16,7 @@ alone is ~2 MB of text). Instead:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -78,6 +79,8 @@ CREATE TABLE IF NOT EXISTS vectors (
 CREATE INDEX IF NOT EXISTS vectors_path ON vectors(path);
 """
 RRF_K = 60
+GITHUB_PREFIX = "GitHub"
+GITHUB_CARD = "_repositorio.md"
 
 
 def split_sections(text: str, title: str) -> list[dict[str, Any]]:
@@ -149,13 +152,20 @@ class VaultIndex:
         db_path: Path,
         exclude: list[str] | None = None,
         people_folder: str | None = None,
+        extra_roots: dict[str, Path] | None = None,
     ) -> None:
         self.vault = vault_path
         self.folders = [f.strip("/") for f in folders if f.strip("/")]
         self.db_path = db_path
         self.exclude = exclude or []
         self.people_folder = (people_folder or "").strip("/") or None
+        # Read-only sources outside the vault, indexed under "<prefix>/..." (e.g. GitHub docs).
+        self.extra_roots = {k.strip("/"): v for k, v in (extra_roots or {}).items()}
         self._last_refresh = 0.0
+
+    def is_external(self, rel: str) -> bool:
+        """Whether an indexed path comes from an extra root (read-only, not in the vault)."""
+        return rel.split("/", 1)[0] in self.extra_roots
 
     # --- storage ------------------------------------------------------------
 
@@ -175,6 +185,17 @@ class VaultIndex:
                 rel = path.relative_to(self.vault).as_posix()
                 if any(part in SKIP_DIRS for part in path.parts):
                     continue
+                if any(fnmatch(rel, pattern) for pattern in self.exclude):
+                    continue
+                found[rel] = path
+        for prefix, root in self.extra_roots.items():
+            if not root.is_dir():
+                continue
+            for path in root.rglob("*.md"):
+                inner = path.relative_to(root).as_posix()
+                if any(part.startswith(".") for part in path.relative_to(root).parts):
+                    continue
+                rel = f"{prefix}/{inner}"
                 if any(fnmatch(rel, pattern) for pattern in self.exclude):
                     continue
                 found[rel] = path
@@ -205,7 +226,10 @@ class VaultIndex:
                     continue
                 h1 = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
                 title = (h1.group(1).strip() if h1 else path.stem)[:200]
-                folder = rel.split("/")[1] if rel.count("/") >= 2 else rel.split("/")[0]
+                if self.is_external(rel):
+                    folder = rel.split("/", 1)[0]
+                else:
+                    folder = rel.split("/")[1] if rel.count("/") >= 2 else rel.split("/")[0]
                 links = sorted({normalize(t.split("/")[-1]) for t in WIKILINK.findall(text)})
                 conn.execute("DELETE FROM chunks WHERE path = ?", (rel,))
                 conn.execute("DELETE FROM vectors WHERE path = ?", (rel,))
@@ -253,18 +277,24 @@ class VaultIndex:
                     logger.warning("Vault search failed", query=query, error=str(e))
                     rows = []
                 per_note: dict[str, int] = {}
+                seen: dict[tuple[str, str, str], dict[str, Any]] = {}
                 for rowid, path, title, heading, date, snippet, _rank in rows:
+                    key = section_key(title, heading, snippet)
+                    if key in seen:
+                        _also_in(seen[key], path)
+                        continue
                     if per_note.get(path, 0) >= 2:
                         continue
                     per_note[path] = per_note.get(path, 0) + 1
-                    results.append({
+                    seen[key] = {
                         "id": rowid,
                         "note": path,
                         "title": title,
                         "section": heading,
                         "date": date,
                         "snippet": re.sub(r"\s+", " ", snippet).strip(),
-                    })
+                    }
+                    results.append(seen[key])
                     if len(results) >= limit:
                         break
                 if results:
@@ -346,6 +376,7 @@ class VaultIndex:
         terms = [t for t in normalize(query).split() if len(t) > 2]
         out: list[dict[str, Any]] = []
         per_note: dict[str, int] = {}
+        seen: dict[tuple[str, str, str], dict[str, Any]] = {}
         with self._connect() as conn:
             for cid in chunk_ids:
                 row = conn.execute(
@@ -356,13 +387,19 @@ class VaultIndex:
                 path, title, heading, date, body, chunk_folder = row
                 if folder and normalize(folder) != normalize(chunk_folder) and normalize(folder) not in normalize(path):
                     continue
+                key = section_key(title, heading, body)
+                if key in seen:
+                    _also_in(seen[key], path)
+                    continue
                 if per_note.get(path, 0) >= 2:
                     continue
                 per_note[path] = per_note.get(path, 0) + 1
-                out.append({
+                result = {
                     "id": cid, "note": path, "title": title, "section": heading, "date": date,
                     "snippet": best_snippet(body, terms),
-                })
+                }
+                seen[key] = result
+                out.append(result)
                 if len(out) >= limit:
                     break
         return out
@@ -398,6 +435,8 @@ class VaultIndex:
 
     def _resolve(self, conn: sqlite3.Connection, note: str) -> str | None:
         rows = conn.execute("SELECT path, title FROM files").fetchall()
+        # Vault notes win name lookups over the many README/roadmap files of extra roots.
+        rows.sort(key=lambda r: self.is_external(r[0]))
         target = note.strip().removesuffix(".md")
         for path, _ in rows:
             if path == note or path.removesuffix(".md") == target:
@@ -464,6 +503,8 @@ class VaultIndex:
             rel = self._resolve(conn, note)
         if not rel:
             raise VaultEditError(f"No note matches '{note}'")
+        if self.is_external(rel):
+            raise VaultEditError(f"'{rel}' is a read-only mirror (not a vault note)")
         path = self.vault / rel
         original = path.read_text(encoding="utf-8")
         updated = apply_edit(original, action, section=section, find=find, new_text=text)
@@ -506,6 +547,9 @@ class VaultIndex:
         if folder:
             wanted = normalize(folder)
             notes = [f for f in files if normalize(f[2]) == wanted or wanted in normalize(f[0])]
+            if wanted == normalize(GITHUB_PREFIX):
+                # One card per repository instead of hundreds of loose docs.
+                notes = [f for f in notes if f[0].endswith(f"/{GITHUB_CARD}")]
             notes.sort(key=lambda f: -f[3])
             return {
                 "folder": folder,
@@ -583,6 +627,17 @@ def vec_blob(vector: list[float]) -> bytes:
     import numpy as np
 
     return np.asarray(vector, dtype=np.float32).tobytes()
+
+
+def section_key(title: str, heading: str, body: str) -> tuple[str, str, str]:
+    """Identity of a section's content, so copies (vault note vs. repo doc) show up once."""
+    digest = hashlib.sha1(normalize(body)[:2000].encode()).hexdigest()[:12]
+    return normalize(title), normalize(heading), digest
+
+
+def _also_in(result: dict[str, Any], path: str) -> None:
+    if path != result["note"] and path not in result.setdefault("also_in", []):
+        result["also_in"].append(path)
 
 
 def best_snippet(body: str, terms: list[str], width: int = 220) -> str:
@@ -717,10 +772,15 @@ def build_index(config: Any) -> VaultIndex:
     if not vault.is_dir():
         raise ValueError(f"Obsidian vault not found at {vault}")
     folders = obs.index_folders or [obs.meetings_folder.split("/")[0]]
+    extra: dict[str, Path] = {}
+    github = getattr(config, "github_docs", None)
+    if github is not None and github.enabled:
+        extra[GITHUB_PREFIX] = Path(github.cache_dir)
     return VaultIndex(
         vault,
         folders,
         Path(obs.index_path),
         exclude=obs.index_exclude,
         people_folder=obs.people_folder,
+        extra_roots=extra,
     )

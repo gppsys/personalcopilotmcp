@@ -32,8 +32,9 @@ TOKEN_SERVICES: dict[str, tuple[str, str, str]] = {
     "asana": ("task", "asana", "access_token"),
     "slack": ("communication", "slack", "access_token"),
     "openai": ("ai", "openai", "api_key"),
+    "github": ("code", "github", "access_token"),
 }
-TOKEN_LABEL = {"asana": "Asana", "slack": "Slack", "openai": "OpenAI (IA del servidor)"}
+TOKEN_LABEL = {"asana": "Asana", "slack": "Slack", "openai": "OpenAI (IA del servidor)", "github": "GitHub"}
 
 
 class AccountsService:
@@ -171,6 +172,15 @@ class AccountsService:
             client = AsyncOpenAI(api_key=cred["api_key"], timeout=15)
             await client.models.retrieve(self.config.ai.default_model)
             return f"OpenAI OK · {self.config.ai.default_model}"
+        if kind == "github":
+            from executive_copilot.providers.code import GitHubProvider
+
+            github = GitHubProvider(self.cm, account)
+            user = await github.get_user()
+            detail = f"GitHub OK · {user.get('login')}"
+            for org in self.config.github_docs.orgs[:1]:
+                detail += f" · {len(await github.list_repos(org))} repos en {org}"
+            return detail
         raise ValueError(f"Tipo desconocido: {kind}")
 
     # --- changes ------------------------------------------------------------

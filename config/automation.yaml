@@ -89,3 +89,9 @@ automation_jobs:
     catch_up: true      # widen the window back to the newest meeting already in the vault
     max_days_back: 60
     use_ai: true
+- job_name: github_docs_sync
+  job_type: github_docs_sync
+  enabled: true
+  schedule: 15 7 * * 1-5
+  settings:
+    summarize: true
