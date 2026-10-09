@@ -99,6 +99,12 @@ def clean_summary(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def summary_part(summary: str, label: str) -> str:
+    """The text after a bold label (``**Qué hace:**``) up to the next label."""
+    match = re.search(rf"\*\*{re.escape(label)}:\*\*\s*(.*?)(?=\n\s*\*\*[^*\n]+:\*\*|\Z)", summary, re.DOTALL)
+    return match.group(1).strip() if match else ""
+
+
 def render_card(
     repo: RepoInfo,
     languages: dict[str, int],
@@ -201,6 +207,28 @@ class GitHubDocsSync:
             "last_sync": manifest.get("last_sync"),
             "last_error": manifest.get("last_error"),
         }
+
+    def profiles(self) -> list[dict[str, Any]]:
+        """What the relationship map needs per mirrored repository (no API calls)."""
+        out = []
+        for full_name, state in self._load_manifest().get("repos", {}).items():
+            owner, _, name = full_name.partition("/")
+            card = self.root / owner / name / GITHUB_CARD
+            text = card.read_text(encoding="utf-8") if card.exists() else ""
+            language = re.search(r"^- Lenguajes: ([^,\n%]+?)(?: \d+%)?(?:,|$)", text, re.MULTILINE)
+            summary = state.get("summary") or ""
+            out.append({
+                "owner": owner,
+                "name": name,
+                "description": state.get("description"),
+                "pushed_at": state.get("pushed_at"),
+                "language": language.group(1).strip() if language else None,
+                "url": f"https://github.com/{full_name}",
+                "what": summary_part(summary, "Qué hace"),
+                "integrations": summary_part(summary, "Integraciones"),
+                "docs": len(state.get("files", {})),
+            })
+        return out
 
     # --- sync -------------------------------------------------------------------
 

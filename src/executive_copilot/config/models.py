@@ -323,6 +323,10 @@ class GitHubDocsConfig(BaseModel):
     max_file_kb: int = Field(default=300, description="Skip larger markdown files")
     cache_dir: str = Field(default="github_docs", description="Local mirror of the docs (gitignored)")
     summarize: bool = Field(default=True, description="Write an AI summary of what each repository does")
+    aliases: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Other names a repository goes by in meetings/projects, e.g. tokenize_and_pay: [Tokeniza y Cobra]",
+    )
 
 
 class CalendarDefaultsConfig(BaseModel):

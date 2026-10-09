@@ -461,7 +461,7 @@
 
         <!-- ============ MAPA ============ -->
         <section x-show="view === 'map'" x-cloak>
-          <div class="grid grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
+          <div class="grid grid-cols-2 lg:grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3 mb-4">
             <template x-for="i in (graph?.insights || [])" :key="i.title">
               <button @click="focusNode(i.node)" class="text-left rounded-2xl p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-indigo-300 dark:hover:border-indigo-500/50 shadow-sm transition">
                 <div class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400" x-text="i.title"></div>
@@ -521,7 +521,7 @@
                     </div>
                     <div class="flex flex-wrap gap-2 mt-3">
                       <button x-show="selected.meta.note" @click="openNote(selected.meta.note, selected.type === 'person' ? 'people' : 'meetings')" class="px-2.5 py-1 rounded-lg bg-violet-500/20 text-violet-200 text-xs hover:bg-violet-500/30">Abrir nota</button>
-                      <a x-show="selected.meta.url" :href="selected.meta.url" target="_blank" class="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-200 text-xs hover:bg-emerald-500/30">Abrir en Asana</a>
+                      <a x-show="selected.meta.url" :href="selected.meta.url" target="_blank" class="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-200 text-xs hover:bg-emerald-500/30" x-text="selected.type === 'repo' ? 'Abrir en GitHub' : 'Abrir en Asana'"></a>
                       <button @click="askAboutNode(selected)" class="px-2.5 py-1 rounded-lg bg-indigo-500/25 text-indigo-200 text-xs hover:bg-indigo-500/35">Preguntar al chat</button>
                     </div>
                   </div>
@@ -1068,9 +1068,9 @@ const ICONS = {
 };
 
 const GRAPH = { sim: null, svg: null, zoom: null, node: null, link: null, label: null, adj: new Map(), nodes: [], k: 1, W: 0, H: 0, fitted: false };
-const LINK_DIST = { member: 150, works_at: 70, belongs_to: 120, attends: 60, mentions: 75, in_project: 34, topic: 95,
+const LINK_DIST = { hosted_in: 55, discusses: 110, builds: 80, integrates: 70, family: 30, member: 150, works_at: 70, belongs_to: 120, attends: 60, mentions: 75, in_project: 34, topic: 95,
   delegated_to: 40, promised_to: 40, promised: 70, invited: 55, series: 50, agenda: 90, contact: 95 };
-const LINK_COLOR = { member: '#a5b4fc', works_at: '#38bdf8', belongs_to: '#f59e0b', attends: '#a78bfa', mentions: '#a78bfa',
+const LINK_COLOR = { hosted_in: '#a3e635', discusses: '#bef264', builds: '#34d399', integrates: '#d9f99d', family: '#a3e635', member: '#a5b4fc', works_at: '#38bdf8', belongs_to: '#f59e0b', attends: '#a78bfa', mentions: '#a78bfa',
   in_project: '#34d399', topic: '#f472b6', delegated_to: '#facc15', promised_to: '#f472b6', promised: '#f472b6',
   invited: '#22d3ee', series: '#22d3ee', agenda: '#22d3ee', contact: '#64748b' };
 const trunc = (t, n) => (t && t.length > n ? t.slice(0, n - 1) + '…' : t);
@@ -1119,6 +1119,7 @@ function workspace() {
       { id: 'meeting', label: 'Reuniones', color: '#a78bfa' }, { id: 'project', label: 'Proyectos', color: '#34d399' },
       { id: 'task', label: 'Tareas', color: '#94a3b8' }, { id: 'event', label: 'Eventos', color: '#22d3ee' },
       { id: 'delegation', label: 'Delegaciones', color: '#facc15' }, { id: 'commitment', label: 'Compromisos', color: '#f472b6' },
+      { id: 'repo', label: 'Repositorios', color: '#a3e635' },
     ],
     accountsData: null, tests: {}, addOpen: false,
     status: null, checks: {}, statusTick: 0, STATUS_EVERY: 30, statusTimer: null, nowTs: Date.now(), eventFilter: 'all',
@@ -1442,7 +1443,7 @@ function workspace() {
     },
     typeLabel(t) {
       return ({ me: 'Tú', org: 'Organización', company: 'Empresa', person: 'Persona', meeting: 'Reunión', project: 'Proyecto',
-        task: 'Tarea', event: 'Evento', delegation: 'Delegación', commitment: 'Compromiso' })[t] || t;
+        task: 'Tarea', event: 'Evento', delegation: 'Delegación', commitment: 'Compromiso', repo: 'Repositorio' })[t] || t;
     },
     toggleType(id) {
       this.hiddenTypes = this.hiddenTypes.includes(id) ? this.hiddenTypes.filter(t => t !== id) : [...this.hiddenTypes, id];
@@ -1452,10 +1453,12 @@ function workspace() {
       const m = n.meta || {}, rows = [];
       const fmt = { emails: 'Correo', interactions: 'Correos', sent: 'Enviados por ti', last_contact: 'Último contacto',
         meetings: 'Reuniones registradas', latest: 'Última reunión', open_tasks: 'Tareas abiertas', due_date: 'Vence',
-        project: 'Proyecto', location: 'Lugar', org_type: 'Tipo', domain: 'Dominio' };
+        project: 'Proyecto', location: 'Lugar', org_type: 'Tipo', domain: 'Dominio',
+        description: 'Descripción', summary: 'Qué hace', language: 'Lenguaje', pushed: 'Último push', docs: 'Documentos',
+        mentions: 'Menciones', repos: 'Repositorios' };
       for (const [k, label] of Object.entries(fmt)) {
         if (m[k] === undefined || m[k] === null || m[k] === '') continue;
-        rows.push([label, Array.isArray(m[k]) ? m[k].join(', ') : (k === 'due_date' || k === 'latest' || k === 'last_contact') ? this.shortDate(String(m[k]).slice(0, 10)) : m[k]]);
+        rows.push([label, Array.isArray(m[k]) ? m[k].join(', ') : (k === 'due_date' || k === 'latest' || k === 'last_contact' || k === 'pushed') ? this.shortDate(String(m[k]).slice(0, 10)) : m[k]]);
       }
       if (m.start) rows.push(['Inicio', this.dayLabel(m.start.slice(0, 10)) + ' ' + this.time(m.start)]);
       if (n.type === 'project' && m.overdue) rows.push(['Vencidas', m.overdue]);
@@ -1501,6 +1504,7 @@ function workspace() {
       GRAPH.label.style('opacity', d => {
         if (focus) return focus.has(d.id) ? 1 : 0;
         if (['me', 'org', 'company', 'project', 'meeting'].includes(d.type)) return 1;
+        if (d.type === 'repo' && (d.id.startsWith('github:') || d.degree >= 2)) return 1;
         if (d.type === 'person' && d.degree >= 6) return 1;
         return k > 1.6 ? 1 : 0;
       });
@@ -1529,6 +1533,7 @@ function workspace() {
       if (n) this.focusNode(n.id); else this.toast('No encontré "' + this.graphQuery + '" en el mapa', true);
     },
     askAboutNode(n) {
+      if (n.type === 'repo') return this.send(`¿Qué hace el repositorio "${n.label}", con qué se integra y en qué reuniones o proyectos aparece?`);
       this.send(`¿Qué sabes de ${this.typeLabel(n.type).toLowerCase()} "${n.label}"? Resume cómo se conecta con mis reuniones, tareas y pendientes.`);
     },
     fitGraph(duration = 600) {
@@ -1595,7 +1600,7 @@ function workspace() {
       node.append('circle').attr('r', d => r(d) + 5).attr('fill', d => this.typeColor(d)).attr('opacity', 0.12);
       node.append('circle').attr('r', r).attr('fill', d => this.typeColor(d)).attr('fill-opacity', 0.92)
         .attr('stroke', d => d.type === 'me' ? '#eef2ff' : 'rgba(255,255,255,.35)').attr('stroke-width', d => d.type === 'me' ? 3 : 1)
-        .attr('filter', d => (['me', 'org', 'meeting', 'project'].includes(d.type) || d.degree > 8) ? 'url(#glow)' : null);
+        .attr('filter', d => (['me', 'org', 'meeting', 'project'].includes(d.type) || d.id.startsWith('github:') || d.degree > 8) ? 'url(#glow)' : null);
       node.filter(d => d.type === 'me').append('text').text(d => d.label.slice(0, 1)).attr('text-anchor', 'middle')
         .attr('dy', 6).attr('font-size', 18).attr('font-weight', 700).attr('fill', '#1e1b4b').style('stroke', 'none');
       const label = node.append('text').text(d => trunc(d.label, 30)).attr('text-anchor', 'middle')

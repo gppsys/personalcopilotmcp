@@ -226,3 +226,16 @@ async def test_search_collapses_copies_of_the_same_section(tmp_path: Path) -> No
         assert len(hits) == 1
         paths = {hits[0]["note"], *hits[0]["also_in"]}
         assert paths == {"Paycode/SAFE/aws.md", "GitHub/Acme/safe/docs/aws.md"}
+
+
+def test_repo_mentions_and_families() -> None:
+    from executive_copilot.services.knowledge_graph import repo_alias, repo_family, repo_mentions
+
+    aliases = {n: [repo_alias(n)] for n in ("safe", "dashboard", "paycode-connect-rust", "tokenize_and_pay", "api")}
+    aliases["tokenize_and_pay"].append("tokeniza y cobra")
+    text = "Demo de SAFE para UDEM; el dashboard falla. Revisar paycode connect rust, SAFE y Tokeniza y Cobra."
+    assert repo_mentions(text, aliases) == {"safe": 2, "paycode-connect-rust": 1, "tokenize_and_pay": 1}
+    assert repo_family("paycode connect rust") == "paycode connect"
+    assert repo_family("sentinel web") == "sentinel"
+    assert repo_family("paycode api") is None
+    assert repo_family("safe") is None

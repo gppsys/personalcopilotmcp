@@ -13,6 +13,10 @@ Sources, all optional (a failing source is reported, the rest still render):
   word (e.g. "PCI", "BBVA").
 - Upcoming calendar events, linked to known attendees and their meeting series.
 - Delegations and my commitments, linked to the person involved.
+- GitHub repositories (mirrored docs, see ``github_docs``): active ones or
+  those a meeting or project talks about, grouped under the organization's
+  GitHub hub, linked to those meetings/projects, to the repos their summary
+  says they integrate with, and to repos of the same family.
 """
 
 from __future__ import annotations
@@ -53,6 +57,49 @@ TOPIC_STOP = {
     "review", "reunir", "meeting", "sync", "weekly", "tablero", "kanban", "epic", "tareas", "task",
     "proyecto", "project", "presentacion", "documentacion", "soporte", "interno", "equipo",
 }
+
+
+# Repository names that are everyday words: they never create a link on their own.
+GENERIC_REPO_WORDS = {
+    "dashboard", "mobile", "onboarding", "tpv", "api", "web", "docs", "demo", "billing",
+    "playcode", "wordpress",
+}
+NOISE_REPO = re.compile(r"(?i)demo|prueba|challenge|example|copy|mockup|test")
+ACTIVE_REPO_DAYS = 365
+
+
+def repo_alias(name: str) -> str:
+    """Repository name as words: "paycode-connect_rust" -> "paycode connect rust"."""
+    return normalize(re.sub(r"[-_.]+", " ", name))
+
+
+def repo_mentions(text: str, aliases: dict[str, list[str]]) -> Counter[str]:
+    """How often each repository (by any of its names) is named in the text.
+
+    Multi-word names must appear whole; single words only count when they are
+    distinctive (product names such as "safe" or "checkout", not "dashboard").
+    """
+    haystack = f" {normalize(text)} "
+    found: Counter[str] = Counter()
+    for repo, names in aliases.items():
+        for alias in names:
+            words = alias.split()
+            if not words or (len(words) == 1 and (alias in GENERIC_REPO_WORDS or len(alias) < 4)):
+                continue
+            count = haystack.count(f" {alias} ")
+            if count:
+                found[repo] += count
+    return found
+
+
+def repo_family(alias: str) -> str | None:
+    """Family key for sibling repos: "paycode connect rust" -> "paycode connect"."""
+    words = alias.split()
+    if len(words) >= 3 and words[0] == "paycode":
+        return " ".join(words[:2])
+    if len(words) >= 2 and len(words[0]) >= 5 and words[0] not in GENERIC_REPO_WORDS and words[0] != "paycode":
+        return words[0]
+    return None
 
 
 def mentioned(text: str, labels: list[str]) -> list[str]:
@@ -121,6 +168,7 @@ class KnowledgeGraphService:
         self.me_names: set[str] = set()
         self.me_emails: set[str] = set()
         self.me_locals: set[str] = set()
+        self.meeting_texts: dict[str, str] = {}
 
     # --- people -----------------------------------------------------------
 
@@ -232,6 +280,7 @@ class KnowledgeGraphService:
         for note in vault.list_notes():
             name = note["name"]
             text = vault.read(name) or ""
+            self.meeting_texts[name] = text
             node = self.g.node(
                 f"meeting:{name}", "meeting", name,
                 note=name, meetings=note["meetings"], latest=note["latest"],
@@ -318,6 +367,90 @@ class KnowledgeGraphService:
                 if mt & ot:
                     self.g.link(mid, oid, "topic")
 
+    def _repos(self) -> None:
+        """Repositories that matter: active, or talked about in meetings and projects."""
+        gh = getattr(self.config, "github_docs", None)
+        if gh is None or not gh.enabled:
+            return
+        from executive_copilot.services.github_docs import GitHubDocsSync
+
+        profiles = {p["name"]: p for p in GitHubDocsSync(self.config, None).profiles()}
+        if not profiles:
+            return
+        aliases = {
+            name: [repo_alias(name), *(normalize(a) for a in gh.aliases.get(name, []))] for name in profiles
+        }
+        cutoff = (datetime.now(self.ws.tz) - timedelta(days=ACTIVE_REPO_DAYS)).isoformat()
+
+        meeting_links = {m: repo_mentions(text, aliases) for m, text in self.meeting_texts.items()}
+        project_links = {
+            nid: repo_mentions(n["label"], aliases) for nid, n in self.g.nodes.items() if n["type"] == "project"
+        }
+        integration_links = {
+            name: repo_mentions(f"{p['integrations']} {p['description'] or ''}", {k: v for k, v in aliases.items() if k != name})
+            for name, p in profiles.items()
+        }
+        talked_about: Counter[str] = Counter()
+        for found in [*meeting_links.values(), *project_links.values()]:
+            talked_about.update(found)
+
+        def wanted(name: str) -> bool:
+            if talked_about[name]:
+                return True
+            active = (profiles[name]["pushed_at"] or "") >= cutoff
+            return active and not NOISE_REPO.search(name)
+
+        keep = {name for name in profiles if wanted(name)}
+        if not keep:
+            return
+        owner = next(iter(profiles.values()))["owner"]
+        hub = self.g.node(
+            f"github:{owner}", "repo", f"GitHub · {owner}",
+            repos=len(keep), url=f"https://github.com/{owner}",
+        )
+        org = next(
+            (f"org:{o.name}" for o in self.config.organizations if normalize(o.name) == normalize(owner)),
+            next((f"org:{o.name}" for o in self.config.organizations if o.organization_type == "employer"), None),
+        )
+        if org:
+            self.g.link(hub, org, "belongs_to", 2)
+
+        for name in keep:
+            p = profiles[name]
+            rid = self.g.node(
+                f"repo:{name}", "repo", name,
+                description=p["description"], summary=p["what"][:280], language=p["language"],
+                pushed=(p["pushed_at"] or "")[:10], url=p["url"], docs=p["docs"], mentions=talked_about[name],
+            )
+            self.g.link(rid, hub, "hosted_in")
+        for meeting, found in meeting_links.items():
+            for name, count in found.items():
+                if name in keep:
+                    self.g.link(f"meeting:{meeting}", f"repo:{name}", "discusses", min(3.0, float(count)))
+        for project, found in project_links.items():
+            for name in found:
+                if name in keep:
+                    self.g.link(project, f"repo:{name}", "builds", 2)
+        for name, found in integration_links.items():
+            for other in found:
+                if name in keep and other in keep:
+                    self.g.link(f"repo:{name}", f"repo:{other}", "integrates", 1.5)
+
+        families: dict[str, list[str]] = {}
+        for name in keep:
+            key = repo_family(aliases[name][0])
+            if key:
+                families.setdefault(key, []).append(name)
+        for name in keep:  # "sentinel" heads the family of "sentinel-web"
+            if aliases[name][0] in families and name not in families[aliases[name][0]]:
+                families[aliases[name][0]].append(name)
+        for members in families.values():
+            if len(members) < 2:
+                continue
+            lead = max(members, key=lambda n: profiles[n]["pushed_at"] or "")
+            for other in members:
+                self.g.link(f"repo:{lead}", f"repo:{other}", "family")
+
     async def _events(self) -> None:
         result = await self.ws.events(days=7)
         self.errors.extend(result["errors"])
@@ -376,6 +509,7 @@ class KnowledgeGraphService:
             ("obsidian_meetings", self._meetings),
             ("asana", self._asana),
             ("topics", self._topics),
+            ("github_repos", self._repos),
             ("calendar", self._events),
             ("tracked", self._tracked),
         ]
@@ -401,7 +535,9 @@ class KnowledgeGraphService:
         for nid, n in self.g.nodes.items():
             n["degree"] = deg[nid]
             interactions = n["meta"].get("interactions", 0)
-            base = {"me": 6, "org": 4.5, "company": 2.5, "meeting": 2.2, "project": 2.4, "person": 1.6}.get(n["type"], 1.0)
+            base = {"me": 6, "org": 4.5, "company": 2.5, "meeting": 2.2, "project": 2.4, "person": 1.6, "repo": 1.8}.get(n["type"], 1.0)
+            if n["id"].startswith("github:"):
+                base = 3.6
             n["weight"] = round(base + math.log1p(deg[nid]) * 0.6 + math.log1p(interactions) * 0.25, 2)
 
         nodes = list(self.g.nodes.values())
@@ -449,6 +585,10 @@ class KnowledgeGraphService:
         if projects:
             hot = max(projects, key=lambda n: n["meta"]["overdue"])
             out.append({"title": "Proyecto con más atraso", "value": hot["label"], "detail": f"{hot['meta']['overdue']} tareas vencidas", "node": hot["id"]})
+        repos = [n for n in nodes if n["type"] == "repo" and n["id"].startswith("repo:") and n["meta"].get("mentions")]
+        if repos:
+            hot_repo = max(repos, key=lambda n: (n["meta"]["mentions"], n["degree"]))
+            out.append({"title": "Repo más discutido", "value": hot_repo["label"], "detail": f"{hot_repo['meta']['mentions']} menciones en reuniones y proyectos", "node": hot_repo["id"]})
         meetings = [n for n in nodes if n["type"] == "meeting"]
         if meetings:
             busy = max(meetings, key=lambda n: n["degree"])
