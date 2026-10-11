@@ -28,12 +28,16 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import yaml
+
 from executive_copilot.logging import get_logger
 
 logger = get_logger(__name__)
 
 GEMINI_SENDER = "gemini-notes@google.com"
 DATE_HEADING = re.compile(r"^## (\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
+FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+ORGANIZATION_KEY = "organizacion"
 PEOPLE_HEADING = "## Personas relacionadas"
 FOOTER = "---\n*Fuente: notas automáticas de Gemini (Google Meet).*"
 
@@ -233,7 +237,8 @@ def insert_section(note_text: str, day: date, section: str) -> tuple[str, bool]:
             return note_text[:pos] + section + "\n" + note_text[pos:], True
 
     # Older than every existing section (or none yet): before the footer.
-    footer = re.search(r"^---\s*$", note_text, re.MULTILINE)
+    body_start = frontmatter_end(note_text)
+    footer = re.compile(r"^---\s*$", re.MULTILINE).search(note_text, body_start)
     people = note_text.find(PEOPLE_HEADING)
     candidates = [p for p in (footer.start() if footer else -1, people) if p >= 0]
     if candidates:
@@ -282,7 +287,88 @@ def ensure_people_links(note_text: str, names: list[str]) -> str:
     return note_text[:idx] + block + (("\n" + rest) if rest else "")
 
 
-def new_note_text(title: str, section: str, people: list[str]) -> str:
+def frontmatter_end(note_text: str) -> int:
+    """Offset where the body starts (0 when the note has no YAML frontmatter)."""
+    match = FRONTMATTER.match(note_text)
+    return match.end() if match else 0
+
+
+def tag_slug(name: str) -> str:
+    """Obsidian-friendly tag from a name: 'Paycode' -> 'paycode', 'Banco Azteca' -> 'banco-azteca'."""
+    return re.sub(r"[^a-z0-9_/-]+", "-", normalize(name)).strip("-")
+
+
+def organization_for_account(config: Any, account: str | None) -> str | None:
+    """Name of the organization that owns ``account`` (explicit mapping first, then e-mail domain)."""
+    if not account:
+        return None
+    orgs = getattr(config, "organizations", None) or []
+    for org in orgs:
+        if any(m.account_id.lower() == account.lower() for m in org.provider_accounts):
+            return str(org.name)
+    if "@" in account:
+        domain = account.rsplit("@", 1)[1].lower()
+        for org in orgs:
+            if any(d.lower() == domain for d in org.domains):
+                return str(org.name)
+    return None
+
+
+def meeting_tags(base_tags: list[str], organization: str | None) -> list[str]:
+    """Tags of a meeting note: the configured base tags plus the organization's."""
+    tags = [tag_slug(t) for t in base_tags if tag_slug(t)]
+    if organization and tag_slug(organization) not in tags:
+        tags.append(tag_slug(organization))
+    return tags
+
+
+def ensure_frontmatter(note_text: str, tags: list[str], organization: str | None) -> tuple[str, bool]:
+    """Make sure the note's YAML frontmatter carries ``tags`` and the organization.
+
+    Existing frontmatter keys are kept; unparsable frontmatter is left alone.
+    Returns (text, changed).
+    """
+    if not tags and not organization:
+        return note_text, False
+    match = FRONTMATTER.match(note_text)
+    data: dict[str, Any] = {}
+    if match:
+        try:
+            loaded = yaml.safe_load(match.group(1))
+        except yaml.YAMLError:
+            return note_text, False
+        if loaded is None:
+            loaded = {}
+        if not isinstance(loaded, dict):
+            return note_text, False
+        data = dict(loaded)
+
+    current = data.get("tags") or []
+    if isinstance(current, str):
+        current = [t for t in re.split(r"[,\s]+", current) if t]
+    current = [str(t).lstrip("#") for t in current]
+    merged = current + [t for t in tags if t not in current]
+    changed = merged != current
+    if merged:
+        data["tags"] = merged
+    if organization and data.get(ORGANIZATION_KEY) != organization:
+        data[ORGANIZATION_KEY] = organization
+        changed = True
+    if not changed:
+        return note_text, False
+
+    block = yaml.safe_dump(data, allow_unicode=True, sort_keys=False, default_flow_style=False).rstrip("\n")
+    body = note_text[match.end():] if match else note_text
+    return f"---\n{block}\n---\n{body}", True
+
+
+def new_note_text(
+    title: str,
+    section: str,
+    people: list[str],
+    tags: list[str] | None = None,
+    organization: str | None = None,
+) -> str:
     """Create a new series note."""
     text = (
         f"# {title}\n\n"
@@ -292,6 +378,7 @@ def new_note_text(title: str, section: str, people: list[str]) -> str:
     )
     if people:
         text = ensure_people_links(text, people)
+    text, _ = ensure_frontmatter(text, tags or [], organization)
     return text
 
 
@@ -546,6 +633,8 @@ class MeetingNotesSyncService:
         obs = config.obsidian
         self.tz = ZoneInfo(config.calendar_defaults.timezone)
         self.account = obs.calendar_account or config.calendar_defaults.account_id
+        self.organization = getattr(obs, "organization", None) or organization_for_account(config, self.account)
+        self.tags = meeting_tags(list(getattr(obs, "note_tags", None) or ["reunion"]), self.organization)
         self.vault = (
             MeetingNotesVault(Path(obs.vault_path), obs.meetings_folder, obs.people_folder)
             if obs.vault_path
@@ -593,6 +682,9 @@ class MeetingNotesSyncService:
 
         result: dict[str, Any] = {
             "account": self.account,
+            "organization": self.organization,
+            "tags": self.tags,
+            "tagged": 0 if dry_run else self.tag_notes(),
             "days_back": days_back,
             "dry_run": dry_run,
             "sources_found": len(sources),
@@ -633,14 +725,15 @@ class MeetingNotesSyncService:
 
             if not dry_run:
                 if current is None:
-                    self.vault.write(name, new_note_text(name, section, people))
+                    self.vault.write(name, new_note_text(name, section, people, self.tags, self.organization))
                     existing.append(name)
                     result["new_notes"].append(name)
                     if self.config.obsidian.update_index:
                         self._add_to_index(name)
                 else:
                     text, _ = insert_section(current, src.day, section)
-                    self.vault.write(name, ensure_people_links(text, people))
+                    text, _ = ensure_frontmatter(ensure_people_links(text, people), self.tags, self.organization)
+                    self.vault.write(name, text)
             else:
                 entry["preview"] = section
                 if current is None:
@@ -648,6 +741,21 @@ class MeetingNotesSyncService:
             result["written"].append(entry)
 
         return result
+
+    def tag_notes(self) -> int:
+        """Add the meeting/organization frontmatter to every note missing it; returns how many changed."""
+        if self.vault is None or self.vault_error():
+            return 0
+        changed = 0
+        for name in self.vault.note_names():
+            text = self.vault.read(name)
+            if text is None:
+                continue
+            new_text, did_change = ensure_frontmatter(text, self.tags, self.organization)
+            if did_change:
+                self.vault.write(name, new_text)
+                changed += 1
+        return changed
 
     def _add_to_index(self, name: str) -> None:
         assert self.vault is not None

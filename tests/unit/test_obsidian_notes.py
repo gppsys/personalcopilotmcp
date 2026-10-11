@@ -18,19 +18,23 @@ from executive_copilot.services.obsidian_notes import (
     add_to_index,
     catch_up_days,
     clean_meeting_title,
+    ensure_frontmatter,
     ensure_people_links,
     gemini_title_from_subject,
     has_section,
     html_to_text,
     insert_section,
     match_people,
+    meeting_tags,
     new_note_text,
     notes_text,
+    organization_for_account,
     parse_ai_json,
     parse_gemini_text,
     render_section,
     resolve_note_name,
     strip_transcript,
+    tag_slug,
 )
 
 NOTE = """# Josue / Gonzalo (1:1 técnico)
@@ -393,3 +397,59 @@ async def test_attachment_timeout_skips_only_that_file(monkeypatch: pytest.Monke
 
     assert await provider.get_attachment_content("doc") is None
     assert provider.drive_unavailable is None
+
+
+def test_new_note_has_frontmatter_tags_and_organization() -> None:
+    text = new_note_text("Kickoff BBVA", "## 2026-10-06\n- x\n", [], ["reunion", "paycode"], "Paycode")
+    assert text.startswith("---\ntags:\n- reunion\n- paycode\norganizacion: Paycode\n---\n# Kickoff BBVA\n")
+    assert text.rstrip().endswith("*Fuente: notas automáticas de Gemini (Google Meet).*")
+
+
+def test_ensure_frontmatter_adds_and_keeps_existing() -> None:
+    plain = "# Nota\n\n## 2026-10-01\n- a\n"
+    tagged, changed = ensure_frontmatter(plain, ["reunion", "paycode"], "Paycode")
+    assert changed and tagged.endswith(plain)
+    again, changed = ensure_frontmatter(tagged, ["reunion", "paycode"], "Paycode")
+    assert not changed and again == tagged
+    # Existing keys and tags survive; only the missing ones are added.
+    custom = "---\ntags: [cliente]\nestado: activo\n---\n# Nota\n"
+    merged, changed = ensure_frontmatter(custom, ["reunion"], "Paycode")
+    assert changed
+    assert "- cliente\n- reunion\n" in merged and "estado: activo" in merged and merged.endswith("# Nota\n")
+    broken = "---\ntags: [unclosed\n---\n# Nota\n"
+    assert ensure_frontmatter(broken, ["reunion"], "Paycode") == (broken, False)
+
+
+def test_insert_section_skips_frontmatter_when_looking_for_footer() -> None:
+    note = "---\ntags:\n- reunion\n---\n# Nota\n\n## 2026-10-05\n- a\n\n---\n*Fuente*\n"
+    text, inserted = insert_section(note, date(2026, 10, 1), "## 2026-10-01\n- old\n")
+    assert inserted and text.startswith("---\ntags:\n- reunion\n---\n# Nota\n")
+    assert text.index("## 2026-10-05") < text.index("## 2026-10-01") < text.index("*Fuente*")
+
+
+def test_meeting_tags_and_organization_lookup() -> None:
+    assert tag_slug("Banco Azteca") == "banco-azteca"
+    assert meeting_tags(["Reunión"], "Paycode") == ["reunion", "paycode"]
+    assert meeting_tags(["reunion", "paycode"], "Paycode") == ["reunion", "paycode"]
+    orgs = [
+        SimpleNamespace(name="Paycode", domains=["paycode.com.mx"],
+                        provider_accounts=[SimpleNamespace(account_id="gonzalo@paycode.com.mx")]),
+        SimpleNamespace(name="Personal", domains=["gmail.com"], provider_accounts=[]),
+    ]
+    config = SimpleNamespace(organizations=orgs)
+    assert organization_for_account(config, "Gonzalo@paycode.com.mx") == "Paycode"
+    assert organization_for_account(config, "someone@gmail.com") == "Personal"
+    assert organization_for_account(config, "x@other.com") is None
+    assert organization_for_account(SimpleNamespace(), "x@paycode.com.mx") is None
+
+
+def test_sync_tags_existing_notes(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    (tmp_path / "Reuniones" / "Vieja.md").write_text("# Vieja\n\n## 2026-09-01\n- a\n", encoding="utf-8")
+    assert service.organization is None and service.tags == ["reunion"]
+    service.organization, service.tags = "Paycode", ["reunion", "paycode"]
+    assert service.tag_notes() == 1
+    assert (tmp_path / "Reuniones" / "Vieja.md").read_text(encoding="utf-8").startswith(
+        "---\ntags:\n- reunion\n- paycode\norganizacion: Paycode\n---\n# Vieja\n"
+    )
+    assert service.tag_notes() == 0

@@ -282,6 +282,17 @@ class ObsidianConfig(BaseModel):
         default=None,
         description="Google account whose meetings are synced (default: calendar_defaults.account_id)",
     )
+    organization: str | None = Field(
+        default=None,
+        description=(
+            "Organization the meetings belong to (frontmatter tag and property). "
+            "Default: the organization whose provider_accounts/domains include calendar_account"
+        ),
+    )
+    note_tags: list[str] = Field(
+        default_factory=lambda: ["reunion"],
+        description="Tags every meeting note carries, besides the organization's",
+    )
     series_map: dict[str, str] = Field(
         default_factory=dict,
         description="Regex on the meeting title -> note name (without .md)",
