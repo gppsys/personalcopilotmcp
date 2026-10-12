@@ -160,6 +160,11 @@ def test_vault_index_with_github_root(tmp_path: Path) -> None:
     assert hits and hits[0]["note"] == "GitHub/Acme/pay/docs/roadmap.md"
     assert index.read("Roadmap")["note"] == "Paycode/Reuniones/Roadmap.md"  # vault wins name lookups
     assert index.read("GitHub/Acme/pay/docs/roadmap.md")["title"] == "Roadmap técnico"
+    # GitHub URLs and owner/repo resolve to the repository card (or the linked doc).
+    for ref in ("https://github.com/Acme/pay/", "https://github.com/Acme/pay", "Acme/pay", "acme/pay"):
+        assert index.read(ref)["note"] == f"GitHub/Acme/pay/{GITHUB_CARD}", ref
+    assert index.read("https://github.com/Acme/pay/blob/main/docs/roadmap.md")["title"] == "Roadmap técnico"
+    assert "error" in index.read("https://github.com/Acme/other")
     listed = index.overview("GitHub")
     assert [n["note"] for n in listed["notes"]] == [f"GitHub/Acme/pay/{GITHUB_CARD}"]
     with pytest.raises(VaultEditError, match="read-only"):

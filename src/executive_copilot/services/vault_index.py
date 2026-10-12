@@ -29,6 +29,10 @@ from typing import Any
 from executive_copilot.logging import get_logger
 from executive_copilot.services.obsidian_notes import normalize
 
+_GITHUB_REF = re.compile(
+    r"^(?:https?://(?:www\.)?github\.com/)?(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+)(?P<rel>/.*)?$"
+)
+
 logger = get_logger(__name__)
 
 CHUNK_CHARS = 1800
@@ -441,6 +445,20 @@ class VaultIndex:
         for path, _ in rows:
             if path == note or path.removesuffix(".md") == target:
                 return str(path)
+        # A GitHub URL or "owner/repo" means the repository card (or one of its docs).
+        m = _GITHUB_REF.match(target)
+        if m:
+            prefix = f"GitHub/{m.group('owner')}/{m.group('repo')}"
+            rel = (m.group("rel") or "").strip("/")
+            if rel.startswith(("blob/", "tree/")):
+                rel = rel.split("/", 2)[2] if rel.count("/") >= 2 else ""
+            wanted = f"{prefix}/{rel.removesuffix('.md')}" if rel else prefix
+            exact = [p for p, _ in rows if p.removesuffix(".md").lower() == wanted.lower()]
+            if exact:
+                return str(exact[0])
+            cards = [p for p, _ in rows if p.lower().startswith(prefix.lower() + "/") and p.endswith("_repositorio.md")]
+            if cards:
+                return str(cards[0])
         norm = normalize(target.split("/")[-1])
         for path, title in rows:
             if normalize(Path(path).stem) == norm or normalize(title) == norm:
