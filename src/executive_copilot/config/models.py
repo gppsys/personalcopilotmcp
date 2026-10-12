@@ -301,6 +301,17 @@ class ObsidianConfig(BaseModel):
         default_factory=list, description="Regexes of meeting titles to ignore"
     )
     update_index: bool = Field(default=True, description="Add new notes to README.md's index")
+    transcripts_folder: str | None = Field(
+        default="Transcripciones",
+        description=(
+            "Subfolder of meetings_folder holding one note per meeting transcript, "
+            "linked from the dated section (null: do not save transcripts)"
+        ),
+    )
+    index_transcripts: bool = Field(
+        default=False,
+        description="Also make transcripts searchable by the assistant (long notes; off keeps searches cheap)",
+    )
     index_folders: list[str] = Field(
         default_factory=list,
         description="Vault folders searchable by the assistant (default: top folder of meetings_folder)",

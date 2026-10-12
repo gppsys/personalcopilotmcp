@@ -790,6 +790,11 @@ def build_index(config: Any) -> VaultIndex:
     if not vault.is_dir():
         raise ValueError(f"Obsidian vault not found at {vault}")
     folders = obs.index_folders or [obs.meetings_folder.split("/")[0]]
+    exclude = list(obs.index_exclude)
+    transcripts = getattr(obs, "transcripts_folder", None)
+    if transcripts and not getattr(obs, "index_transcripts", False):
+        # Verbatim transcripts are long and noisy: searchable only when asked for.
+        exclude.append(f"{obs.meetings_folder.strip('/')}/{transcripts.strip('/')}/*")
     extra: dict[str, Path] = {}
     github = getattr(config, "github_docs", None)
     if github is not None and github.enabled:
@@ -798,7 +803,7 @@ def build_index(config: Any) -> VaultIndex:
         vault,
         folders,
         Path(obs.index_path),
-        exclude=obs.index_exclude,
+        exclude=exclude,
         people_folder=obs.people_folder,
         extra_roots=extra,
     )

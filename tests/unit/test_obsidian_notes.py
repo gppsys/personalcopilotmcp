@@ -16,6 +16,7 @@ from executive_copilot.services.obsidian_notes import (
     MeetingSource,
     MeetingSummary,
     add_to_index,
+    add_transcript_link,
     catch_up_days,
     clean_meeting_title,
     ensure_frontmatter,
@@ -35,6 +36,8 @@ from executive_copilot.services.obsidian_notes import (
     resolve_note_name,
     strip_transcript,
     tag_slug,
+    transcript_note_text,
+    transcript_text,
 )
 
 NOTE = """# Josue / Gonzalo (1:1 técnico)
@@ -229,6 +232,7 @@ def _service(tmp_path: Path) -> MeetingNotesSyncService:
             skip_titles=[],
             series_map={},
             update_index=False,
+            transcripts_folder="Transcripciones",
         ),
         calendar_defaults=SimpleNamespace(timezone="America/Mexico_City", account_id="me@example.com"),
     )
@@ -453,3 +457,129 @@ def test_sync_tags_existing_notes(tmp_path: Path) -> None:
         "---\ntags:\n- reunion\n- paycode\norganizacion: Paycode\n---\n# Vieja\n"
     )
     assert service.tag_notes() == 0
+
+
+GEMINI_DOC = (
+    "📝 Las notas\r\nsept 29, 2026\r\nResumen\r\nSe acordó X.\r\n\r\n"
+    "📖 Transcripción\r\nsept 29, 2026\r\nWeekly - Transcripción\r\n00:00:05\r\n\r\n\r\n"
+    "Brandon Olvera: ¿Qué pasó?\r\nGonzalo P: Hola.\r\n\r\n\r\n\r\n\r\n00:01:35\r\n\r\n\r\n"
+    "Gonzalo P: Vamos a comenzar.\r\n\r\n\r\n\r\n\r\n"
+    "La transcripción finalizó después de 00:12:13\r\n\r\n\r\n"
+    "Esta transcripción editable se generó por computadora y puede contener errores."
+)
+
+
+def test_transcript_text_keeps_speech_and_timestamps_only() -> None:
+    out = transcript_text(GEMINI_DOC)
+    assert out == (
+        "## 00:00:05\n\nBrandon Olvera: ¿Qué pasó?\nGonzalo P: Hola.\n\n"
+        "## 00:01:35\n\nGonzalo P: Vamos a comenzar."
+    )
+    assert transcript_text("Resumen\n- notas") is None
+    boilerplate = "📖 Transcripción\nsept 28, 2026\nX - Transcripción\n00:00:00\n\nLa transcripción finalizó después de 00:05:16\n"
+    assert transcript_text(boilerplate) is None
+    english = "Summary\nx\n\nTranscript\nSep 28, 2026\nX - Transcript\n00:00:00\nA: hi\nThe transcript ended after 00:01:00\n"
+    assert transcript_text(english) == "## 00:00:00\n\nA: hi"
+
+
+def test_transcript_note_text_links_back_to_the_series() -> None:
+    text = transcript_note_text(
+        "Weekly", date(2026, 9, 29), "## 00:00:05\n\nA: hola", "https://docs.google.com/document/d/x",
+        ["transcripcion", "paycode"], "Paycode",
+    )
+    assert text.startswith("---\ntags:\n- transcripcion\n- paycode\norganizacion: Paycode\nreunion: '[[Weekly]]'\nfecha: '2026-09-29'\n---\n")
+    assert "# Weekly — 2026-09-29 (transcripción)" in text
+    assert "[[Weekly#2026-09-29]]" in text and "[Notas de Gemini](https://docs.google.com/document/d/x)" in text
+    assert text.rstrip().endswith("A: hola")
+
+
+def test_render_section_links_transcript() -> None:
+    out = render_section(date(2026, 10, 6), MeetingSummary(bullets=["x"]), "https://d/1", "Reuniones/Transcripciones/Weekly 2026-10-06")
+    assert out.endswith("- Fuente: [Notas de Gemini](https://d/1)\n- Transcripción: [[Reuniones/Transcripciones/Weekly 2026-10-06|Transcripción]]\n")
+
+
+def test_add_transcript_link_backfills_once() -> None:
+    out, changed = add_transcript_link(NOTE, date(2026, 8, 24), "Reuniones/Transcripciones/J 2026-08-24")
+    assert changed
+    assert "- Plugin de WooCommerce.\n- Transcripción: [[Reuniones/Transcripciones/J 2026-08-24|Transcripción]]\n\n---\n" in out
+    assert "## 2026-08-31\n- Error de tokenización.\n\n## 2026-08-24" in out  # other sections untouched
+    _, again = add_transcript_link(out, date(2026, 8, 24), "Reuniones/Transcripciones/J 2026-08-24")
+    assert not again
+    _, missing = add_transcript_link(NOTE, date(2026, 1, 1), "x")
+    assert not missing
+
+
+@pytest.mark.asyncio
+async def test_calendar_source_carries_transcript(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeCalendar.contents = {"doc": GEMINI_DOC}
+    FakeCalendar.unavailable_on = None
+    monkeypatch.setattr(google_calendar, "GoogleCalendarProvider", FakeCalendar)
+
+    (src,) = await _service(tmp_path)._from_calendar(days_back=3)
+    assert "Gonzalo P: Hola" not in src.text  # the summary input never carries the transcript
+    assert src.transcript is not None and src.transcript.startswith("## 00:00:05")
+
+
+@pytest.mark.asyncio
+async def test_sync_writes_transcript_note_and_backfills(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    src = MeetingSource(
+        key="1", source="calendar_attachment", title="Weekly", day=date(2026, 10, 6),
+        text="Resumen\n- Avance del plugin\n", url="https://d/1", transcript="## 00:00:00\n\nA: hola",
+    )
+
+    async def nothing(days_back: int) -> list[Any]:
+        return []
+
+    async def calendar(days_back: int) -> list[MeetingSource]:
+        return [src]
+
+    service._from_calendar = calendar  # type: ignore[method-assign]
+    service._from_gmail = nothing  # type: ignore[method-assign]
+
+    result = await service.sync(days_back=3)
+    assert result["written"][0]["transcript"] == "Reuniones/Transcripciones/Weekly 2026-10-06"
+    assert result["transcripts"] == ["Weekly 2026-10-06"]
+    transcript = tmp_path / "Reuniones" / "Transcripciones" / "Weekly 2026-10-06.md"
+    assert transcript.read_text(encoding="utf-8").rstrip().endswith("A: hola")
+    note = (tmp_path / "Reuniones" / "Weekly.md").read_text(encoding="utf-8")
+    assert "- Transcripción: [[Reuniones/Transcripciones/Weekly 2026-10-06|Transcripción]]" in note
+
+    # A section synced before transcripts existed gets its transcript on the next run.
+    transcript.unlink()
+    (tmp_path / "Reuniones" / "Weekly.md").write_text(note.replace(
+        "- Transcripción: [[Reuniones/Transcripciones/Weekly 2026-10-06|Transcripción]]\n", ""
+    ), encoding="utf-8")
+    result = await service.sync(days_back=3)
+    assert result["written"] == [] and result["transcripts"] == ["Weekly 2026-10-06"]
+    assert transcript.exists()
+    assert "- Transcripción: [[Reuniones/Transcripciones/Weekly 2026-10-06|Transcripción]]" in (
+        tmp_path / "Reuniones" / "Weekly.md"
+    ).read_text(encoding="utf-8")
+
+    # Nothing to do once both exist; transcripts are not meeting notes.
+    result = await service.sync(days_back=3)
+    assert result["transcripts"] == []
+    assert service.vault is not None and service.vault.note_names() == ["Weekly"]
+
+
+@pytest.mark.asyncio
+async def test_sync_without_transcripts_folder_only_links_nothing(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.vault = MeetingNotesVault(tmp_path, "Reuniones", None, transcripts_folder=None)
+    src = MeetingSource(
+        key="1", source="calendar_attachment", title="Weekly", day=date(2026, 10, 6),
+        text="Resumen\n- x\n", transcript="## 00:00:00\n\nA: hola",
+    )
+
+    async def nothing(days_back: int) -> list[Any]:
+        return []
+
+    async def calendar(days_back: int) -> list[MeetingSource]:
+        return [src]
+
+    service._from_calendar = calendar  # type: ignore[method-assign]
+    service._from_gmail = nothing  # type: ignore[method-assign]
+    result = await service.sync(days_back=3)
+    assert result["transcripts"] == [] and "transcript" not in result["written"][0]
+    assert "Transcripción" not in (tmp_path / "Reuniones" / "Weekly.md").read_text(encoding="utf-8")

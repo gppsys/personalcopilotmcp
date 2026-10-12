@@ -11,7 +11,7 @@ An MCP (Model Context Protocol) server that provides AI assistants with access t
 - **Automation Engine**: Scheduled jobs for synchronization and briefings
 - **Follow-up Detection**: Automatically tracks sent emails awaiting replies
 - **Transcript Scanning**: Extracts action items from meeting transcripts (Google Meet)
-- **Obsidian Meeting Notes**: Writes Gemini meeting notes into your vault as dated sections per meeting series, and lets the assistant search them
+- **Obsidian Meeting Notes**: Writes Gemini meeting notes into your vault as dated sections per meeting series (the verbatim transcript goes to a linked note of its own), and lets the assistant search them
 - **E-mail to Calendar**: Finds e-mails that need a calendar entry (invites, appointments, school events, reservations) and adds the ones you approve to your default calendar
 
 ## Quick Start

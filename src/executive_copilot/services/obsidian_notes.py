@@ -40,6 +40,8 @@ FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 ORGANIZATION_KEY = "organizacion"
 PEOPLE_HEADING = "## Personas relacionadas"
 FOOTER = "---\n*Fuente: notas automáticas de Gemini (Google Meet).*"
+TRANSCRIPT_TAG = "transcripcion"
+TRANSCRIPT_LINK = re.compile(r"^- Transcripci[oó]n: \[\[", re.MULTILINE)
 
 SUMMARY_PROMPT = """Eres el asistente de un CTO. Resume estas notas automáticas de Gemini
 de la reunión "{title}" ({day}) para su bóveda de Obsidian.
@@ -75,6 +77,7 @@ class MeetingSource:
     text: str
     url: str | None = None
     attendees: list[str] = field(default_factory=list)
+    transcript: str | None = None  # cleaned verbatim transcript, when the Doc has one
 
 
 @dataclass
@@ -205,8 +208,17 @@ def has_section(note_text: str, day: date) -> bool:
     return day.isoformat() in DATE_HEADING.findall(note_text)
 
 
-def render_section(day: date, summary: MeetingSummary, source_url: str | None = None) -> str:
-    """Render one dated section in the vault's style."""
+def render_section(
+    day: date,
+    summary: MeetingSummary,
+    source_url: str | None = None,
+    transcript_note: str | None = None,
+) -> str:
+    """Render one dated section in the vault's style.
+
+    ``transcript_note`` is the vault-relative path (without .md) of the note
+    holding the verbatim transcript, linked from the section when given.
+    """
     lines = [f"## {day.isoformat()}"]
     lines.extend(f"- {b.strip()}" for b in summary.bullets if b.strip())
     for decision in summary.decisions:
@@ -217,9 +229,48 @@ def render_section(day: date, summary: MeetingSummary, source_url: str | None = 
         lines.append(f"- Próximos pasos: {'; '.join(steps)}.")
     if source_url:
         lines.append(f"- Fuente: [Notas de Gemini]({source_url})")
+    if transcript_note:
+        lines.append(transcript_link_line(transcript_note))
     if len(lines) == 1:
         lines.append("- (Sin resumen disponible.)")
     return "\n".join(lines) + "\n"
+
+
+def transcript_link_line(transcript_note: str) -> str:
+    """The bullet that links a dated section to its transcript note."""
+    return f"- Transcripción: [[{transcript_note}|Transcripción]]"
+
+
+def section_span(note_text: str, day: date) -> tuple[int, int] | None:
+    """(start, end) offsets of the body of the ``## day`` section, or None.
+
+    The body ends at the next heading, the footer rule or the end of the note.
+    """
+    heading = re.compile(rf"^## {re.escape(day.isoformat())}\s*$", re.MULTILINE).search(note_text)
+    if not heading:
+        return None
+    start = heading.end()
+    stop = re.compile(r"^(#{1,2} |---\s*$)", re.MULTILINE).search(note_text, start)
+    return start, (stop.start() if stop else len(note_text))
+
+
+def add_transcript_link(note_text: str, day: date, transcript_note: str) -> tuple[str, bool]:
+    """Append the transcript bullet to an existing dated section (backfill).
+
+    Returns (text, changed); unchanged when the section is missing or already
+    links a transcript.
+    """
+    span = section_span(note_text, day)
+    if span is None:
+        return note_text, False
+    start, end = span
+    body = note_text[start:end]
+    if TRANSCRIPT_LINK.search(body):
+        return note_text, False
+    new_body = body.rstrip("\n") + "\n" + transcript_link_line(transcript_note) + "\n"
+    if end < len(note_text):
+        new_body += "\n"
+    return note_text[:start] + new_body + note_text[end:], True
 
 
 def insert_section(note_text: str, day: date, section: str) -> tuple[str, bool]:
@@ -474,6 +525,76 @@ def notes_text(content: str) -> str | None:
     return content
 
 
+TRANSCRIPT_NOISE = [
+    re.compile(r"(?i)^.*[-–]\s*(transcripci[oó]n|transcript)\s*$"),  # "<title> - Transcripción"
+    re.compile(r"(?i)^(la transcripci[oó]n finaliz[oó] despu[eé]s de|the transcript ended after)\b.*$"),
+    re.compile(r"(?i)^(esta transcripci[oó]n editable|this editable transcript)\b.*$"),
+    re.compile(r"(?i)^\s*\d{1,2} de \w+ de \d{4}\s*$|^\s*\w{3,5}\.? \d{1,2}, \d{4}\s*$"),  # date line
+]
+TIMESTAMP_LINE = re.compile(r"^\s*(\d{2}:\d{2}:\d{2})\s*$")
+
+
+def clean_transcript(raw: str) -> str:
+    """Tidy the transcript tab of a Gemini Doc for a vault note.
+
+    Keeps the ``Speaker: text`` lines, turns the ``HH:MM:SS`` markers into
+    headings (one section per block) and drops Gemini's own boilerplate
+    (title line, date, "the transcript ended after…", disclaimer).
+    """
+    lines: list[str] = []
+    for line in raw.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = line.rstrip()
+        if TRANSCRIPT_HEADING.match(line) or any(p.match(line) for p in TRANSCRIPT_NOISE):
+            continue
+        stamp = TIMESTAMP_LINE.match(line)
+        if stamp:
+            lines.append(f"\n## {stamp.group(1)}\n")
+            continue
+        lines.append(line)
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines))
+    return text.strip()
+
+
+def transcript_text(content: str) -> str | None:
+    """The cleaned verbatim transcript of a Gemini Doc export, or None when it has none."""
+    match = TRANSCRIPT_HEADING.search(content)
+    if not match:
+        return None
+    text = clean_transcript(content[match.start():])
+    # A transcript with no spoken line (only boilerplate) is not worth a note.
+    return text if re.search(r"^[^\n#]+: \S", text, re.MULTILINE) else None
+
+
+def transcript_note_name(series: str, day: date) -> str:
+    """Name (without .md) of the transcript note of one meeting."""
+    return f"{series} {day.isoformat()}"
+
+
+def transcript_note_text(
+    series: str,
+    day: date,
+    transcript: str,
+    source_url: str | None,
+    tags: list[str],
+    organization: str | None,
+) -> str:
+    """Create the note holding one meeting's transcript."""
+    data: dict[str, Any] = {"tags": tags}
+    if organization:
+        data[ORGANIZATION_KEY] = organization
+    data["reunion"] = f"[[{series}]]"
+    data["fecha"] = day.isoformat()
+    block = yaml.safe_dump(data, allow_unicode=True, sort_keys=False, default_flow_style=False).rstrip("\n")
+    source = f" Fuente: [Notas de Gemini]({source_url})." if source_url else ""
+    return (
+        f"---\n{block}\n---\n"
+        f"# {series} — {day.isoformat()} (transcripción)\n\n"
+        f"Transcripción automática de Gemini (Google Meet); puede contener errores. "
+        f"Resumen en [[{series}#{day.isoformat()}]].{source}\n\n"
+        f"{transcript}\n"
+    )
+
+
 def parse_ai_json(text: str) -> Any:
     """Parse JSON from a model reply, tolerating ``` fences and prose around it."""
     cleaned = text.strip()
@@ -498,10 +619,18 @@ def parse_ai_json(text: str) -> Any:
 class MeetingNotesVault:
     """File access to the meetings (and people) folders of an Obsidian vault."""
 
-    def __init__(self, vault_path: Path, meetings_folder: str, people_folder: str | None) -> None:
+    def __init__(
+        self,
+        vault_path: Path,
+        meetings_folder: str,
+        people_folder: str | None,
+        transcripts_folder: str | None = None,
+    ) -> None:
         self.vault_path = vault_path
         self.meetings_dir = vault_path / meetings_folder
         self.people_dir = vault_path / people_folder if people_folder else None
+        # Subfolder of the meetings folder: one note per meeting transcript.
+        self.transcripts_dir = self.meetings_dir / transcripts_folder if transcripts_folder else None
 
     def check(self) -> str | None:
         """Return an error message when the vault is not usable."""
@@ -531,6 +660,26 @@ class MeetingNotesVault:
 
     def write(self, name: str, text: str) -> None:
         p = self.path(name)
+        tmp = p.with_name(f".{p.name}.tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(p)
+
+    def transcript_note(self, series: str, day: date) -> str | None:
+        """Vault-relative path (without .md) of a meeting's transcript note, or None when disabled."""
+        if self.transcripts_dir is None:
+            return None
+        rel = self.transcripts_dir.relative_to(self.vault_path).as_posix()
+        return f"{rel}/{transcript_note_name(series, day)}"
+
+    def has_transcript(self, series: str, day: date) -> bool:
+        if self.transcripts_dir is None:
+            return False
+        return (self.transcripts_dir / f"{transcript_note_name(series, day)}.md").exists()
+
+    def write_transcript(self, series: str, day: date, text: str) -> None:
+        assert self.transcripts_dir is not None
+        self.transcripts_dir.mkdir(parents=True, exist_ok=True)
+        p = self.transcripts_dir / f"{transcript_note_name(series, day)}.md"
         tmp = p.with_name(f".{p.name}.tmp")
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(p)
@@ -635,8 +784,14 @@ class MeetingNotesSyncService:
         self.account = obs.calendar_account or config.calendar_defaults.account_id
         self.organization = getattr(obs, "organization", None) or organization_for_account(config, self.account)
         self.tags = meeting_tags(list(getattr(obs, "note_tags", None) or ["reunion"]), self.organization)
+        self.transcript_tags = meeting_tags([TRANSCRIPT_TAG], self.organization)
         self.vault = (
-            MeetingNotesVault(Path(obs.vault_path), obs.meetings_folder, obs.people_folder)
+            MeetingNotesVault(
+                Path(obs.vault_path),
+                obs.meetings_folder,
+                obs.people_folder,
+                getattr(obs, "transcripts_folder", None),
+            )
             if obs.vault_path
             else None
         )
@@ -691,6 +846,7 @@ class MeetingNotesSyncService:
             "written": [],
             "skipped": [],
             "new_notes": [],
+            "transcripts": [],
             "errors": source_errors,
         }
         seen: set[tuple[str, str]] = set()
@@ -706,6 +862,8 @@ class MeetingNotesSyncService:
             seen.add(key)
             current = self.vault.read(name) if exists else None
             if current and has_section(current, src.day):
+                if self._backfill_transcript(name, src, current, dry_run):
+                    result["transcripts"].append(f"{name} {src.day.isoformat()}")
                 result["skipped"].append({"title": src.title, "note": name, "date": src.day.isoformat(), "reason": "already in note"})
                 continue
 
@@ -720,9 +878,17 @@ class MeetingNotesSyncService:
                 continue
 
             people = match_people(summary.people + src.attendees, people_notes)
-            section = render_section(src.day, summary, src.url)
+            transcript_note = self.vault.transcript_note(name, src.day) if src.transcript else None
+            section = render_section(src.day, summary, src.url, transcript_note)
             entry = {"title": src.title, "note": name, "date": src.day.isoformat(), "source": src.source, "people": people}
 
+            if transcript_note and src.transcript:
+                entry["transcript"] = transcript_note
+                result["transcripts"].append(f"{name} {src.day.isoformat()}")
+                if not dry_run:
+                    self.vault.write_transcript(
+                        name, src.day, self._transcript_note_text(name, src, src.transcript)
+                    )
             if not dry_run:
                 if current is None:
                     self.vault.write(name, new_note_text(name, section, people, self.tags, self.organization))
@@ -741,6 +907,25 @@ class MeetingNotesSyncService:
             result["written"].append(entry)
 
         return result
+
+    def _transcript_note_text(self, series: str, src: MeetingSource, transcript: str) -> str:
+        return transcript_note_text(series, src.day, transcript, src.url, self.transcript_tags, self.organization)
+
+    def _backfill_transcript(self, name: str, src: MeetingSource, current: str, dry_run: bool) -> bool:
+        """Save the transcript of a meeting whose section already exists; returns whether it did."""
+        assert self.vault is not None
+        if not src.transcript or self.vault.has_transcript(name, src.day):
+            return False
+        transcript_note = self.vault.transcript_note(name, src.day)
+        if transcript_note is None:
+            return False
+        if dry_run:
+            return True
+        self.vault.write_transcript(name, src.day, self._transcript_note_text(name, src, src.transcript))
+        text, changed = add_transcript_link(current, src.day, transcript_note)
+        if changed:
+            self.vault.write(name, text)
+        return True
 
     def tag_notes(self) -> int:
         """Add the meeting/organization frontmatter to every note missing it; returns how many changed."""
@@ -810,6 +995,7 @@ class MeetingNotesSyncService:
                     attendees=[
                         a.display_name or a.email for a in getattr(event, "attendees", []) or []
                     ],
+                    transcript=transcript_text(content),
                 ))
         if provider.drive_unavailable:
             # Stop hammering Drive and fall back to the Gemini e-mails.
