@@ -16,6 +16,7 @@ from executive_copilot.services.status import (
     PENDING,
     WARN,
     StatusService,
+    _run_errors,
     describe_cron,
     git_revision,
     percentile,
@@ -97,3 +98,10 @@ def test_git_revision(tmp_path: Path) -> None:
     (git / "packed-refs").write_text("# pack\n1234567890 refs/heads/main\n")
     assert git_revision(tmp_path) == "1234567"
     assert git_revision(tmp_path / "nope") is None
+
+
+def test_run_errors_accepts_list_or_count() -> None:
+    assert _run_errors({"details": {"errors": ["boom\ntrace", {"error": "x"}]}}) == ["boom", "x"]
+    assert _run_errors({"details": {"errors": 0}}) == []
+    assert _run_errors({"details": {"errors": 3}}) == ["3 error(es)"]
+    assert _run_errors({"details": None}) == []

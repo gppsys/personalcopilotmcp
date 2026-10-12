@@ -115,6 +115,7 @@ CLAUDE.md
 activity.db*
 vault_index.db*
 github_docs/
+graphify-out/
 briefing_cache.json
 dashboard_done_items.json
 tech_dashboard.html

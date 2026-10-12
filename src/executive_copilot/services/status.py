@@ -498,7 +498,12 @@ class StatusService:
 
 
 def _run_errors(run: dict[str, Any]) -> list[str]:
+    """Normalise ``details.errors``: some jobs store a list of messages, others a count."""
     errors = (run.get("details") or {}).get("errors") or []
+    if isinstance(errors, (int, float)):
+        return [f"{int(errors)} error(es)"] if errors > 0 else []
+    if isinstance(errors, (str, dict)):
+        errors = [errors]
     out = []
     for e in errors:
         if isinstance(e, dict):
