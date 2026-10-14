@@ -610,6 +610,42 @@ class EmailForwardJob(Job):
         )
 
 
+class KnowledgeSyncJob(Job):
+    """Synchronize reviewed knowledge using the existing scheduler."""
+
+    async def execute(self) -> JobResult:
+        from executive_copilot.services.knowledge.locking import KnowledgeBusy
+        from executive_copilot.services.knowledge.service import execute_knowledge
+
+        started_at = datetime.utcnow()
+        config = self.container.config
+        if not config.knowledge.enabled or not config.knowledge.sync_enabled:
+            return JobResult(job_name=self.name, status=JobStatus.SKIPPED, started_at=started_at)
+        try:
+            result = await execute_knowledge(config, self.container.credential_manager, "sync")
+        except KnowledgeBusy:
+            # Another vault writer (e.g. the meeting-notes sync) holds the lock; next run retries.
+            return JobResult(
+                job_name=self.name,
+                status=JobStatus.SKIPPED,
+                started_at=started_at,
+                details={"reason": "vault busy"},
+            )
+        # Open conflicts need review but do not stop other paths from synchronizing.
+        return JobResult(
+            job_name=self.name,
+            status=JobStatus.COMPLETED,
+            started_at=started_at,
+            items_processed=result.get("published", 0),
+            details={
+                **{k: result.get(k) for k in ("at", "commit", "published", "documents", "relationships")},
+                "conflicts": len(result.get("conflicts") or []),
+                "unavailable": len(result.get("unavailable") or []),
+                "unreviewed": len(result.get("unreviewed") or []),
+            },
+        )
+
+
 # Job registry
 JOB_TYPES: dict[str, type[Job]] = {
     "email_sync": EmailSyncJob,
@@ -625,4 +661,5 @@ JOB_TYPES: dict[str, type[Job]] = {
     "email_forward": EmailForwardJob,
     "obsidian_meeting_sync": ObsidianMeetingSyncJob,
     "github_docs_sync": GitHubDocsSyncJob,
+    "knowledge_sync": KnowledgeSyncJob,
 }

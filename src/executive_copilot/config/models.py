@@ -326,6 +326,19 @@ class ObsidianConfig(BaseModel):
     )
 
 
+class KnowledgeConfig(BaseModel):
+    """Opt-in personal knowledge layer; secrets are read from the environment."""
+
+    enabled: bool = False
+    repository: str = ""
+    branch: str = "main"
+    account: str = "knowledge"
+    state_dir: Path = Path("knowledge_state")
+    sync_enabled: bool = False
+    exclude: list[str] = Field(default_factory=list)
+    max_file_bytes: int = Field(default=1_000_000, ge=1, le=10_000_000)
+
+
 class GitHubDocsConfig(BaseModel):
     """Markdown docs of GitHub repositories, mirrored locally and searchable with the vault.
 
@@ -442,6 +455,7 @@ class AppConfig(BaseSettings):
     # Workspace integrations
     obsidian: ObsidianConfig = Field(default_factory=ObsidianConfig)
     github_docs: GitHubDocsConfig = Field(default_factory=GitHubDocsConfig)
+    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     calendar_defaults: CalendarDefaultsConfig = Field(default_factory=CalendarDefaultsConfig)
     email_calendar: EmailCalendarConfig = Field(default_factory=EmailCalendarConfig)
 

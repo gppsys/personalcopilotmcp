@@ -233,6 +233,7 @@ See [Development Guide](docs/DevelopmentGuide.md) for detailed instructions.
 
 ## Documentation
 
+- [Personal Knowledge Management](docs/PersonalKnowledge.md) — private GitHub notes, MySQL index and reviewed changes
 - [Architecture](docs/Architecture.md)
 - [Development Guide](docs/DevelopmentGuide.md)
 - [Configuration](docs/Configuration.md)

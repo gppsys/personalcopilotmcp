@@ -117,6 +117,10 @@ def create_admin_app(config_dir: Path | None = None, shutdown_event: "asyncio.Ev
         version="0.1.0",
     )
 
+    from executive_copilot.admin.knowledge_auth import install_workspace_auth
+
+    install_workspace_auth(app, config_dir or Path("config"))
+
     # Store shutdown event for graceful shutdown
     app.state.shutdown_event = shutdown_event
 

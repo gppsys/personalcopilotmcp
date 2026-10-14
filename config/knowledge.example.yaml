@@ -1,0 +1,13 @@
+# Copy this section into config/config.local.yaml; keep secrets in .env.
+knowledge:
+  enabled: false
+  repository: owner/private-notes
+  branch: main
+  account: knowledge
+  sync_enabled: false
+  state_dir: knowledge_state
+  max_file_bytes: 1000000
+  exclude:
+    - '**/secrets/**'
+    - '**/credentials/**'
+    - '**/Transcripciones/**'

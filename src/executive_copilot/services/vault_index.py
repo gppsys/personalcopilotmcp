@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from executive_copilot.logging import get_logger
+from executive_copilot.services.knowledge.locking import coordinated_write
 from executive_copilot.services.obsidian_notes import normalize
 
 _GITHUB_REF = re.compile(
@@ -157,7 +158,9 @@ class VaultIndex:
         exclude: list[str] | None = None,
         people_folder: str | None = None,
         extra_roots: dict[str, Path] | None = None,
+        coordination_dir: Path | None = None,
     ) -> None:
+        self.coordination_dir = coordination_dir
         self.vault = vault_path
         self.folders = [f.strip("/") for f in folders if f.strip("/")]
         self.db_path = db_path
@@ -503,6 +506,7 @@ class VaultIndex:
             out["hint"] = "Pass section=<heading> to read only one part."
         return out
 
+    @coordinated_write
     def edit(
         self,
         note: str,
@@ -806,4 +810,5 @@ def build_index(config: Any) -> VaultIndex:
         exclude=exclude,
         people_folder=obs.people_folder,
         extra_roots=extra,
+        coordination_dir=config.knowledge.state_dir if getattr(config, "knowledge", None) and config.knowledge.enabled else None,
     )

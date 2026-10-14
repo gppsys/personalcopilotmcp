@@ -375,7 +375,7 @@ class WorkspaceService:
         if folder == "meetings":
             return meetings
         if folder == "people" and self.config.obsidian.people_folder:
-            people = MeetingNotesVault(meetings.vault_path, self.config.obsidian.people_folder, None)
+            people = MeetingNotesVault(meetings.vault_path, self.config.obsidian.people_folder, None, coordination_dir=meetings.coordination_dir)
             if people.meetings_dir.exists():
                 return people
         raise ValueError(f"Unknown or missing folder: {folder}")

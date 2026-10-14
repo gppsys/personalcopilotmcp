@@ -23,6 +23,9 @@ x-copilot: &copilot
     - UV_PROJECT_ENVIRONMENT=/opt/venv
     - TZ=${TZ:-America/Mexico_City}
     - OBSIDIAN_VAULT_PATH=${OBSIDIAN_VAULT_PATH}
+    - COPILOT_WORKSPACE_ACCESS_TOKEN=${COPILOT_WORKSPACE_ACCESS_TOKEN:-}
+    - COPILOT_KNOWLEDGE_DATABASE_URL=${COPILOT_KNOWLEDGE_DATABASE_URL:-}
+    - COPILOT_KNOWLEDGE_GITHUB_TOKEN=${COPILOT_KNOWLEDGE_GITHUB_TOKEN:-}
   restart: unless-stopped
 
 services:
@@ -40,7 +43,8 @@ services:
 
   # MCP over HTTP for clients that support it (Claude Code: `claude mcp add
   # --transport http copilot http://127.0.0.1:8091/mcp`). It has no
-  # authentication, so it is bound to localhost only. Opt in with --profile http.
+  # authentication by default; a workspace key protects it when configured.
+  # It is bound to localhost only. Opt in with --profile http.
   copilot-mcp-http:
     <<: *copilot
     container_name: copilot-mcp-http
@@ -48,3 +52,24 @@ services:
     command: ["/opt/venv/bin/copilot", "mcp", "--transport", "http", "--host", "0.0.0.0", "--port", "8091"]
     ports:
       - "127.0.0.1:8091:8091"
+
+  # Optional knowledge index. Existing Copilot databases remain untouched.
+  knowledge-mysql:
+    image: mysql:8.4
+    profiles: ["knowledge"]
+    environment:
+      MYSQL_DATABASE: copilot_knowledge
+      MYSQL_USER: copilot_knowledge
+      MYSQL_PASSWORD: ${KNOWLEDGE_MYSQL_PASSWORD:-}
+      MYSQL_ROOT_PASSWORD: ${KNOWLEDGE_MYSQL_ROOT_PASSWORD:-}
+    volumes:
+      - knowledge_mysql:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  knowledge_mysql:

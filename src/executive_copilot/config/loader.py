@@ -178,5 +178,9 @@ def load_config(config_dir: Path | str | None = None) -> AppConfig:
     """
     if config_dir is None:
         config_dir = Path("config")
-    loader = ConfigLoader(config_dir)
-    return loader.load()
+    config = ConfigLoader(config_dir).load()
+    # Every writer must agree on one lock file, whatever its working directory.
+    if not config.knowledge.state_dir.is_absolute():
+        root = Path(config_dir).resolve().parent
+        config.knowledge.state_dir = root / config.knowledge.state_dir
+    return config

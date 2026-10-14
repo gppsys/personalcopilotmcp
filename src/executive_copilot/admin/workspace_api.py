@@ -121,6 +121,9 @@ class ChatInput(BaseModel):
 def create_workspace_router(config_dir: Path, credential_manager: CredentialManager) -> APIRouter:
     """Routes for the workspace page. Config is re-read per request so edits apply live."""
     router = APIRouter(prefix="/api/ws", tags=["workspace"])
+    from executive_copilot.admin.knowledge_api import knowledge_router
+
+    router.include_router(knowledge_router(config_dir, credential_manager))
     state: dict[str, Any] = {}
 
     def ws() -> WorkspaceService:

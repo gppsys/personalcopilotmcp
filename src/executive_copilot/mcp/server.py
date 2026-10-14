@@ -40,6 +40,8 @@ class ActivityTrackingMiddleware(Middleware):
             message = getattr(context, "message", None)
             tool_name = getattr(message, "name", None) or "unknown"
             args = dict(getattr(message, "arguments", None) or {})
+            if tool_name.startswith("knowledge_") or tool_name in {"edit_vault_note", "read_vault_note", "search_vault"}:
+                args = {"argument_names": list(args)}
             activity_id = tracker.start_activity(tool_name, args)
         except Exception:
             logger.warning("activity_tracking_start_failed", exc_info=True)
@@ -102,12 +104,16 @@ class ActivityTrackingMiddleware(Middleware):
 def create_mcp_server(
     config: AppConfig,
     credential_manager: CredentialManager | None = None,
+    http_auth: bool = False,
 ) -> FastMCP:
     """Create and configure the MCP server with multi-account aggregation."""
+    from executive_copilot.mcp.knowledge import WorkspaceTokenVerifier
+
     mcp = FastMCP(
         name=config.mcp.name,
         version=config.mcp.version,
         middleware=[ActivityTrackingMiddleware()],
+        auth=WorkspaceTokenVerifier() if http_auth else None,
     )
 
     if credential_manager is None:
@@ -4303,6 +4309,9 @@ Keep it concise and actionable. Focus on what's most important for this specific
 
         return week_history.render_dashboard_html()
 
+    from executive_copilot.mcp.knowledge import register_knowledge_tools
+
+    register_knowledge_tools(mcp, config, credential_manager)
     logger.info("MCP server configured with multi-account aggregation tools")
     return mcp
 
@@ -4328,7 +4337,12 @@ def main(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8091) ->
     from executive_copilot.config import load_config
 
     config = load_config()
-    mcp = create_mcp_server(config)
+    http_auth = transport == "http" and (config.knowledge.enabled or bool(os.environ.get("COPILOT_WORKSPACE_ACCESS_TOKEN")))
+    if http_auth:
+        from executive_copilot.admin.knowledge_auth import authorize_knowledge
+
+        authorize_knowledge(os.environ.get("COPILOT_WORKSPACE_ACCESS_TOKEN"))
+    mcp = create_mcp_server(config, http_auth=http_auth)
     if transport == "http":
         mcp.run(transport="http", host=host, port=port)
     else:

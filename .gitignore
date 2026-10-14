@@ -132,3 +132,6 @@ vault_backups/
 
 # Personal evaluation sets
 scripts/*.local.yaml
+
+# Durable personal knowledge operation lock and working state
+knowledge_state/

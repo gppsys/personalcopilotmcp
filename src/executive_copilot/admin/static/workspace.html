@@ -459,6 +459,52 @@
           </div>
         </section>
 
+        <!-- ============ CONOCIMIENTO ============ -->
+        <section x-show="view === 'knowledge'" x-cloak class="space-y-4">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div><h2 class="text-2xl font-semibold">Conocimiento personal</h2><p class="text-sm text-slate-500">Notas de Obsidian · búsqueda textual · cambios revisados</p></div>
+            <div class="flex gap-2"><button @click="newKnowledge()" class="px-3 py-2 rounded-lg border dark:border-slate-700">Nueva nota</button><button @click="syncKnowledge()" :disabled="knowledgeBusy" class="px-3 py-2 rounded-lg bg-indigo-600 text-white disabled:opacity-50">Sincronizar</button></div>
+          </div>
+          <p x-show="knowledgeError" x-text="knowledgeError" role="alert" class="p-4 rounded-xl bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-200"></p>
+          <template x-if="knowledgeDashboard"><div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div class="p-4 rounded-xl border dark:border-slate-700"><p class="text-sm text-slate-500">Documentos</p><strong x-text="knowledgeDashboard.documents"></strong></div>
+            <div class="p-4 rounded-xl border dark:border-slate-700"><p class="text-sm text-slate-500">Relaciones declaradas</p><strong x-text="knowledgeDashboard.relationships"></strong></div>
+            <div class="p-4 rounded-xl border dark:border-slate-700"><p class="text-sm text-slate-500">Última sincronización</p><span class="text-xs" x-text="knowledgeDashboard.sync.last_sync?.at || 'Sin sincronizar'"></span></div>
+            <div class="p-4 rounded-xl border dark:border-slate-700"><p class="text-sm text-slate-500">Último commit</p><span class="font-mono text-xs break-all" x-text="knowledgeDashboard.sync.last_sync?.commit?.slice(0,12) || 'Sin commit'"></span></div>
+          </div></template>
+          <div class="flex flex-wrap gap-2">
+            <input x-model="knowledgeQuery" @keydown.enter="searchKnowledge()" placeholder="Buscar contenido, título o metadatos" aria-label="Búsqueda textual" class="flex-1 min-w-48 rounded-lg border dark:border-slate-700 bg-transparent p-2">
+            <input x-model="knowledgeFolder" placeholder="Carpeta" aria-label="Carpeta" class="w-36 rounded-lg border dark:border-slate-700 bg-transparent p-2">
+            <input x-model="knowledgeTag" placeholder="Etiqueta" aria-label="Etiqueta" class="w-32 rounded-lg border dark:border-slate-700 bg-transparent p-2">
+            <select x-model="knowledgeCategory" @change="searchKnowledge(); renderKnowledgeGraph()" aria-label="Categoría" class="rounded-lg border dark:border-slate-700 bg-white dark:bg-slate-900 p-2"><option value="">Todas las categorías</option><template x-for="category in knowledgeCategories"><option :value="category" x-text="category"></option></template></select>
+            <button @click="searchKnowledge()" class="rounded-lg bg-indigo-600 text-white px-4">Buscar</button>
+          </div>
+          <div class="grid lg:grid-cols-[280px_minmax(0,1fr)] gap-4">
+            <aside class="space-y-4 min-w-0">
+              <div class="max-h-[60vh] overflow-auto space-y-2"><template x-for="item in knowledgeResults" :key="item.path"><button @click="openKnowledge(item.path)" class="block w-full text-left p-3 rounded-xl border dark:border-slate-700 hover:border-indigo-500"><strong class="block" x-text="item.title"></strong><span class="text-xs text-slate-500 break-all" x-text="item.path"></span><p class="text-sm line-clamp-2" x-text="item.snippet"></p><span class="text-xs text-indigo-500" x-text="item.match_types.join(', ') + (item.score ? ' · ' + item.score.toFixed(2) : '')"></span></button></template></div>
+              <template x-if="knowledgeDashboard"><div class="space-y-2 text-sm"><h3 class="font-semibold">Recientes</h3><template x-for="item in knowledgeDashboard.recent" :key="item.path"><button class="block text-left text-indigo-500" @click="openKnowledge(item.path)" x-text="item.title"></button></template><h3 class="font-semibold pt-2">Sin relaciones</h3><template x-for="item in knowledgeDashboard.isolated" :key="item.path"><button class="block text-left text-indigo-500" @click="openKnowledge(item.path)" x-text="item.title"></button></template></div></template>
+            </aside>
+            <div class="min-w-0 space-y-4">
+              <div x-show="knowledgeEditing || knowledgeNote" class="p-4 rounded-xl border dark:border-slate-700 space-y-3">
+                <div class="flex flex-wrap justify-between gap-2"><h3 class="font-semibold" x-text="knowledgeNote?.title || 'Nueva nota'"></h3><div class="flex gap-3 text-sm"><button x-show="knowledgeNote && !knowledgeEditing" @click="knowledgeEditing=true; knowledgeDraft=knowledgeNote.content; knowledgeProposal=null">Editar</button><button x-show="knowledgeNote" @click="historyKnowledge()">Historial</button><button x-show="knowledgeNote" @click="proposeKnowledge('delete')" class="text-rose-500">Proponer eliminación</button></div></div>
+                <input x-show="knowledgeEditing && !knowledgeNote" x-model="knowledgeNewPath" placeholder="Reflexiones/nueva-nota.md" aria-label="Ruta de nueva nota" class="w-full rounded-lg border dark:border-slate-700 bg-transparent p-2">
+                <template x-if="knowledgeNote"><details class="text-xs"><summary>Metadatos</summary><pre class="whitespace-pre-wrap" x-text="JSON.stringify(knowledgeNote.metadata, null, 2)"></pre></details></template>
+                <article x-show="!knowledgeEditing" class="prose-note max-h-[60vh] overflow-auto" x-html="renderKnowledge(knowledgeVersion || knowledgeNote?.content || '')" @click="knowledgeLink($event)"></article>
+                <p x-show="knowledgeVersion" class="text-sm text-amber-600">Versión histórica <button @click="knowledgeVersion=null" class="underline">Volver a la actual</button></p>
+                <textarea x-show="knowledgeEditing" x-model="knowledgeDraft" aria-label="Markdown de la nota" class="w-full min-h-80 rounded-lg border dark:border-slate-700 bg-transparent p-3 font-mono text-sm"></textarea>
+                <div x-show="knowledgeEditing" class="flex gap-3"><button @click="proposeKnowledge(knowledgeNote ? 'update' : 'create')" class="px-3 py-2 rounded-lg bg-indigo-600 text-white">Revisar cambios</button><button @click="knowledgeEditing=false">Cancelar</button></div>
+                <div class="flex flex-wrap gap-2 text-sm"><template x-for="item in (knowledgeNote?.related?.nodes || []).filter(n => n.path && n.path !== knowledgeNote.path)" :key="item.id"><button @click="openKnowledge(item.path)" class="rounded-full border dark:border-slate-700 px-3 py-1" x-text="item.title"></button></template></div>
+                <template x-if="knowledgeNote"><details class="text-xs"><summary>Relaciones entrantes y salientes</summary><pre class="whitespace-pre-wrap" x-text="JSON.stringify(knowledgeNote.related, null, 2)"></pre></details></template>
+                <div class="space-y-2 text-sm"><template x-for="item in knowledgeHistory" :key="item.sha"><button @click="versionKnowledge(item.sha)" class="block text-left text-indigo-500" x-text="item.date + ' · ' + item.message"></button></template></div>
+              </div>
+              <template x-if="knowledgeProposal"><div class="p-4 rounded-xl border border-indigo-500 space-y-3"><h3 class="font-semibold">Revisar propuesta</h3><p class="text-sm break-all" x-text="knowledgeProposal.path"></p><pre class="max-h-96 overflow-auto text-xs whitespace-pre-wrap" x-text="knowledgeProposal.diff"></pre><details open><summary class="text-sm">Cambios que se publicarán en GitHub</summary><pre class="max-h-96 overflow-auto text-xs whitespace-pre-wrap" x-text="knowledgeProposal.publication_diff"></pre></details><button @click="confirmKnowledge()" :disabled="knowledgeBusy" class="px-3 py-2 rounded-lg bg-indigo-600 text-white disabled:opacity-50">Confirmar estos cambios</button><button @click="knowledgeProposal=null" class="ml-3">Cerrar</button></div></template>
+              <div class="p-4 rounded-xl border dark:border-slate-700"><div class="flex flex-wrap justify-between gap-2"><h3 class="font-semibold">Grafo de conocimiento</h3><div class="flex gap-3 text-sm"><label><input type="checkbox" x-model="knowledgeInferred" @change="renderKnowledgeGraph()"> Mostrar inferidas</label><button @click="loadKnowledgeGraph(null)">Vista general</button></div></div><p class="text-xs text-slate-500">Arrastra y amplía. Haz clic para abrir una nota. Línea discontinua: relación inferida.</p><div x-ref="knowledgeGraph" class="h-80 w-full overflow-hidden"></div><p x-show="knowledgeGraphData?.truncated" class="text-xs text-amber-600">Vista limitada. Selecciona una nota para explorar su vecindario.</p></div>
+            </div>
+          </div>
+          <template x-if="knowledgeDashboard"><div class="p-4 rounded-xl border dark:border-slate-700 space-y-3"><h3 class="font-semibold">Monitor de sincronización</h3><p class="text-sm" x-text="knowledgeDashboard.sync.repository + ' · ' + knowledgeDashboard.sync.branch + ' · ' + (knowledgeDashboard.sync.enabled ? 'Activada' : 'Desactivada')"></p><p class="text-rose-500" x-text="knowledgeDashboard.sync.error?.message || ''"></p><template x-for="item in knowledgeDashboard.sync.pending" :key="item.id"><div class="flex flex-wrap gap-2 text-sm"><span x-text="item.path + ' · ' + item.operation + ' · ' + item.status"></span><button x-show="item.status === 'proposed'" @click="reviewKnowledge(item.id)" class="text-indigo-500">Revisar</button></div></template><template x-for="item in knowledgeDashboard.sync.conflicts" :key="item.id"><button @click="openKnowledgeConflict(item.id)" class="block text-rose-500" x-text="'Conflicto: ' + item.path"></button></template><template x-for="path in (knowledgeDashboard.sync.unreviewed || [])" :key="path"><button @click="openKnowledge(path)" class="block text-amber-600" x-text="'Cambio local sin revisar: ' + path"></button></template><template x-for="item in (knowledgeDashboard.sync.unavailable || [])" :key="item.path"><p class="text-sm text-slate-500" x-text="'No disponible: ' + item.path + ' · ' + item.reason"></p></template></div></template>
+          <template x-if="knowledgeConflict"><div class="p-4 rounded-xl border border-rose-500 space-y-3"><h3 class="font-semibold" x-text="'Resolver: ' + knowledgeConflict.path"></h3><div class="grid md:grid-cols-3 gap-3"><template x-for="side in ['base','local','remote']"><div><h4 x-text="side"></h4><pre class="max-h-64 overflow-auto text-xs whitespace-pre-wrap" x-text="knowledgeConflict[side] ?? '(eliminado)'"></pre></div></template></div><textarea x-model="knowledgeResolution" aria-label="Markdown de resolución" class="w-full min-h-48 rounded-lg border dark:border-slate-700 bg-transparent p-3 font-mono text-sm"></textarea><button @click="resolveKnowledge(false)" class="px-3 py-2 bg-indigo-600 text-white rounded-lg">Revisar resolución</button><button @click="resolveKnowledge(true)" class="ml-3 text-rose-500">Revisar eliminación</button></div></template>
+        </section>
+
         <!-- ============ MAPA ============ -->
         <section x-show="view === 'map'" x-cloak>
           <div class="grid grid-cols-2 lg:grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3 mb-4">
@@ -1090,10 +1136,16 @@ function workspace() {
       { id: 'tasks', label: 'Tareas', icon: 'tasks', badge: true },
       { id: 'calendar', label: 'Correo → Calendario', icon: 'calendar', badge: true },
       { id: 'notes', label: 'Obsidian', icon: 'note' },
+      { id: 'knowledge', label: 'Conocimiento', icon: 'note' },
       { id: 'map', label: 'Mapa de relaciones', icon: 'graph' },
       { id: 'accounts', label: 'Cuentas', icon: 'key', badge: true },
       { id: 'status', label: 'Estado', icon: 'pulse', badge: true },
     ],
+    knowledgeDashboard: null, knowledgeResults: [], knowledgeQuery: '', knowledgeFolder: '', knowledgeTag: '', knowledgeCategory: '',
+    knowledgeCategories: ['fact','reflection','inference','hypothesis','decision','event','concept'],
+    knowledgeError: '', knowledgeBusy: false, knowledgeNote: null, knowledgeEditing: false, knowledgeDraft: '', knowledgeNewPath: '',
+    knowledgeProposal: null, knowledgeHistory: [], knowledgeVersion: null, knowledgeConflict: null, knowledgeResolution: '',
+    knowledgeGraphData: null, knowledgeInferred: true, knowledgeSimulation: null,
     view: 'today',
     dark: document.documentElement.classList.contains('dark'),
     chatOpen: window.innerWidth >= 1280,
@@ -1172,6 +1224,7 @@ function workspace() {
     toggleTheme() {
       this.dark = !this.dark;
       document.documentElement.classList.toggle('dark', this.dark);
+      if(this.view === 'knowledge') this.renderKnowledgeGraph();
       store('ws-theme', this.dark ? 'dark' : 'light');
     },
     go(id) {
@@ -1183,6 +1236,7 @@ function workspace() {
       if (id === 'calendar' && !this.week) this.loadWeek();
       // Notes change behind the page (scheduled Gemini sync, Obsidian edits): always re-read.
       if (id === 'notes') this.loadNotes();
+      if (id === 'knowledge') this.loadKnowledge();
       if (id === 'map') { if (!this.graph) this.loadGraph(); else this.$nextTick(() => this.renderGraph()); }
       if (id === 'accounts' && !this.accountsData) this.loadAccounts();
       if (id === 'status') {
@@ -1194,7 +1248,7 @@ function workspace() {
     refresh() {
       ({ today: () => this.loadOverview(), tasks: () => this.loadTasks(),
          calendar: () => this.loadWeek(), notes: () => this.loadNotes(),
-         map: () => this.loadGraph(), accounts: () => this.loadAccounts(),
+         knowledge: () => this.loadKnowledge(), map: () => this.loadGraph(), accounts: () => this.loadAccounts(),
          status: () => { this.loadStatus(); this.runChecks(true); } })[this.view]();
     },
     errorsFor(view) {
@@ -1362,6 +1416,130 @@ function workspace() {
         this.toast('Evento creado');
         return r;
       } finally { this.busy.event = false; }
+    },
+
+    // ---------- personal knowledge ----------
+    async loadKnowledge() {
+      this.knowledgeBusy = true; this.knowledgeError = '';
+      try {
+        this.knowledgeDashboard = await this.api('/api/ws/knowledge/dashboard');
+        await this.searchKnowledge(); await this.loadKnowledgeGraph(this.knowledgeNote?.path || null);
+      } catch (e) { this.knowledgeError = e.message; }
+      finally { this.knowledgeBusy = false; }
+    },
+    async searchKnowledge() {
+      try {
+        const params = new URLSearchParams({query:this.knowledgeQuery, folder:this.knowledgeFolder, tag:this.knowledgeTag, category:this.knowledgeCategory, limit:'100'});
+        this.knowledgeResults = (await this.api('/api/ws/knowledge/search?' + params)).results;
+      } catch (e) { this.knowledgeError = e.message; }
+    },
+    async openKnowledge(path) {
+      try {
+        this.knowledgeNote = await this.api('/api/ws/knowledge/document?' + new URLSearchParams({path}));
+        this.knowledgeEditing = false; this.knowledgeVersion = null; this.knowledgeHistory = [];
+        await this.loadKnowledgeGraph(path);
+      } catch (e) { this.knowledgeError = e.message; }
+    },
+    newKnowledge() {
+      this.knowledgeNote = null; this.knowledgeDraft = '# Nueva reflexión\n\n'; this.knowledgeNewPath = '';
+      this.knowledgeEditing = true; this.knowledgeProposal = null; this.knowledgeHistory = []; this.knowledgeVersion = null;
+    },
+    async proposeKnowledge(operation) {
+      try {
+        this.knowledgeProposal = await this.api('/api/ws/knowledge/proposals', {method:'POST', body:{operation,
+          path:this.knowledgeNote?.path || this.knowledgeNewPath, content:this.knowledgeDraft,
+          expected_hash:this.knowledgeNote?.hash || null}});
+        this.knowledgeDashboard = await this.api('/api/ws/knowledge/dashboard');
+      } catch (e) { this.knowledgeError = e.message; }
+    },
+    async reviewKnowledge(id) {
+      try { this.knowledgeProposal = await this.api('/api/ws/knowledge/proposals/' + encodeURIComponent(id)); }
+      catch (e) { this.knowledgeError = e.message; }
+    },
+    async confirmKnowledge() {
+      if (!this.knowledgeProposal) return;
+      this.knowledgeBusy = true;
+      try {
+        const proposal = this.knowledgeProposal;
+        await this.api('/api/ws/knowledge/proposals/' + encodeURIComponent(proposal.id) + '/confirm', {method:'POST'});
+        this.knowledgeProposal = null; this.knowledgeConflict = null; this.knowledgeEditing = false;
+        if (proposal.operation !== 'delete') await this.openKnowledge(proposal.path); else this.knowledgeNote = null;
+        this.toast('Cambio confirmado; pendiente de publicación'); await this.loadKnowledge();
+      } catch (e) { this.knowledgeError = e.message; }
+      finally { this.knowledgeBusy = false; }
+    },
+    async syncKnowledge() {
+      this.knowledgeBusy = true;
+      try { await this.api('/api/ws/knowledge/sync', {method:'POST'}); await this.loadKnowledge(); this.toast('Sincronización completada'); }
+      catch (e) { this.knowledgeError = e.message; }
+      finally { this.knowledgeBusy = false; }
+    },
+    renderKnowledge(content) {
+      const escaped = value => value.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '');
+      const linked = body.replace(/\[\[([^\]\n]+)\]\]/g, (_, raw) => {
+        const [target, label] = raw.split('|');
+        return '<a href="#" data-knowledge-link="' + escaped(target.split('#')[0]) + '">' + escaped(label || target) + '</a>';
+      });
+      return DOMPurify.sanitize(marked.parse(linked), {ADD_ATTR:['data-knowledge-link']});
+    },
+    async knowledgeLink(event) {
+      const link = event.target.closest('a[data-knowledge-link]'); if (!link) return; event.preventDefault();
+      const target = link.dataset.knowledgeLink.replace(/\.md$/, '');
+      try {
+        const results = (await this.api('/api/ws/knowledge/search?' + new URLSearchParams({query:target,limit:'100'}))).results;
+        const matches = results.filter(n => [n.title, n.path.replace(/\.md$/, ''), n.path.split('/').pop().replace(/\.md$/, '')].includes(target));
+        if(matches.length === 1) await this.openKnowledge(matches[0].path); else this.toast('Enlace ambiguo o sin destino: ' + target, true);
+      } catch(e) { this.knowledgeError = e.message; }
+    },
+    async historyKnowledge() {
+      try { this.knowledgeHistory = (await this.api('/api/ws/knowledge/history?' + new URLSearchParams({path:this.knowledgeNote.path}))).results; }
+      catch(e) { this.knowledgeError = e.message; }
+    },
+    async versionKnowledge(revision) {
+      try { this.knowledgeVersion = (await this.api('/api/ws/knowledge/document?' + new URLSearchParams({path:this.knowledgeNote.path,revision}))).content; this.knowledgeEditing=false; }
+      catch(e) { this.knowledgeError = e.message; }
+    },
+    async openKnowledgeConflict(id) {
+      try {
+        this.knowledgeConflict = {id, ...await this.api('/api/ws/knowledge/conflicts/' + encodeURIComponent(id))};
+        this.knowledgeResolution = this.knowledgeConflict.local ?? this.knowledgeConflict.remote ?? '';
+      } catch(e) { this.knowledgeError = e.message; }
+    },
+    async resolveKnowledge(deletion) {
+      try {
+        let hash = null;
+        if (this.knowledgeConflict.local !== null) hash = (await this.api('/api/ws/knowledge/document?' + new URLSearchParams({path:this.knowledgeConflict.path}))).hash;
+        this.knowledgeProposal = await this.api('/api/ws/knowledge/conflicts/' + encodeURIComponent(this.knowledgeConflict.id) + '/resolve', {method:'POST',body:{content:deletion ? null : this.knowledgeResolution,expected_hash:hash}});
+      } catch(e) { this.knowledgeError = e.message; }
+    },
+    async loadKnowledgeGraph(path) {
+      try {
+        this.knowledgeGraphData = await this.api('/api/ws/knowledge/graph' + (path ? '?' + new URLSearchParams({path}) : ''));
+        this.$nextTick(() => this.renderKnowledgeGraph());
+      } catch(e) { this.knowledgeError = e.message; }
+    },
+    renderKnowledgeGraph() {
+      const container = this.$refs.knowledgeGraph; if(!container || !this.knowledgeGraphData) return;
+      if(this.knowledgeSimulation) this.knowledgeSimulation.stop();
+      d3.select(container).selectAll('*').remove();
+      const nodes = this.knowledgeGraphData.nodes.filter(n => !this.knowledgeCategory || n.categories.includes(this.knowledgeCategory) || n.categories.includes('tag')).map(n => ({...n}));
+      const ids = new Set(nodes.map(n => n.id));
+      const edges = this.knowledgeGraphData.edges.filter(e => (this.knowledgeInferred || e.explicit) && ids.has(e.source) && ids.has(e.target)).map(e => ({...e}));
+      const width = container.clientWidth || 600, height = 320;
+      const svg = d3.select(container).append('svg').attr('viewBox',`0 0 ${width} ${height}`).attr('width','100%').attr('height',height);
+      const group = svg.append('g'); svg.call(d3.zoom().scaleExtent([.2,5]).on('zoom', event => group.attr('transform',event.transform)));
+      const lines = group.append('g').selectAll('line').data(edges).join('line').attr('stroke','#94a3b8').attr('stroke-opacity',.6).attr('stroke-dasharray',e => e.explicit ? null : '5,5');
+      lines.append('title').text(e => e.kind + ' · ' + e.origin);
+      const circles = group.append('g').selectAll('circle').data(nodes).join('circle').attr('r',n => n.path ? 7 : 4).attr('fill',n => n.path ? '#6366f1' : '#14b8a6').attr('cursor','pointer').on('click',(_,n) => {if(n.path) this.openKnowledge(n.path);});
+      circles.append('title').text(n => n.title);
+      const labels = group.append('g').selectAll('text').data(nodes).join('text').text(n => n.title).attr('font-size',10).attr('fill',this.dark ? '#cbd5e1' : '#334155').attr('dx',10).attr('dy',4);
+      const simulation = d3.forceSimulation(nodes).force('link',d3.forceLink(edges).id(n => n.id).distance(80)).force('charge',d3.forceManyBody().strength(-120)).force('center',d3.forceCenter(width/2,height/2)).on('tick',() => {
+        lines.attr('x1',e=>e.source.x).attr('y1',e=>e.source.y).attr('x2',e=>e.target.x).attr('y2',e=>e.target.y);
+        circles.attr('cx',n=>n.x).attr('cy',n=>n.y); labels.attr('x',n=>n.x).attr('y',n=>n.y);
+      });
+      circles.call(d3.drag().on('start',(event,n)=>{if(!event.active)simulation.alphaTarget(.3).restart();n.fx=n.x;n.fy=n.y;}).on('drag',(event,n)=>{n.fx=event.x;n.fy=event.y;}).on('end',(event,n)=>{if(!event.active)simulation.alphaTarget(0);n.fx=null;n.fy=null;}));
+      this.knowledgeSimulation=simulation;
     },
 
     // ---------- notes ----------

@@ -95,3 +95,9 @@ automation_jobs:
   schedule: 15 7 * * 1-5
   settings:
     summarize: true
+
+- job_name: knowledge_sync
+  job_type: knowledge_sync
+  enabled: false
+  schedule: '*/5 * * * *'
+  settings: {}

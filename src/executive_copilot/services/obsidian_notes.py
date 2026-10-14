@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from executive_copilot.logging import get_logger
+from executive_copilot.services.knowledge.locking import coordinated_write
 
 logger = get_logger(__name__)
 
@@ -625,7 +626,9 @@ class MeetingNotesVault:
         meetings_folder: str,
         people_folder: str | None,
         transcripts_folder: str | None = None,
+        coordination_dir: Path | None = None,
     ) -> None:
+        self.coordination_dir = coordination_dir
         self.vault_path = vault_path
         self.meetings_dir = vault_path / meetings_folder
         self.people_dir = vault_path / people_folder if people_folder else None
@@ -658,6 +661,7 @@ class MeetingNotesVault:
         p = self.path(name)
         return p.read_text(encoding="utf-8") if p.exists() else None
 
+    @coordinated_write
     def write(self, name: str, text: str) -> None:
         p = self.path(name)
         tmp = p.with_name(f".{p.name}.tmp")
@@ -676,6 +680,7 @@ class MeetingNotesVault:
             return False
         return (self.transcripts_dir / f"{transcript_note_name(series, day)}.md").exists()
 
+    @coordinated_write
     def write_transcript(self, series: str, day: date, text: str) -> None:
         assert self.transcripts_dir is not None
         self.transcripts_dir.mkdir(parents=True, exist_ok=True)
@@ -779,6 +784,7 @@ class MeetingNotesSyncService:
         self.config = config
         self.credential_manager = credential_manager
         self._ai = ai_service
+        self.coordination_dir = config.knowledge.state_dir if getattr(config, "knowledge", None) and config.knowledge.enabled else None
         obs = config.obsidian
         self.tz = ZoneInfo(config.calendar_defaults.timezone)
         self.account = obs.calendar_account or config.calendar_defaults.account_id
@@ -791,6 +797,7 @@ class MeetingNotesSyncService:
                 obs.meetings_folder,
                 obs.people_folder,
                 getattr(obs, "transcripts_folder", None),
+                coordination_dir=self.coordination_dir,
             )
             if obs.vault_path
             else None
@@ -817,6 +824,8 @@ class MeetingNotesSyncService:
         today = datetime.now(self.tz).date()
         return catch_up_days(self.vault.latest_date(), today, minimum, maximum)
 
+    # Not locked as a whole: it spends minutes on calendar and AI calls. Each note write
+    # takes the shared lock, and knowledge sync treats other writers' edits three-way.
     async def sync(self, days_back: int = 7, dry_run: bool = False) -> dict[str, Any]:
         """Write new meeting sections for the last ``days_back`` days."""
         error = self.vault_error()
