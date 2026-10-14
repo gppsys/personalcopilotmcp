@@ -18,7 +18,7 @@ from statistics import median
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from executive_copilot.admin.credentials import OAUTH_FAMILIES, CredentialManager
+from executive_copilot.credentials import OAUTH_FAMILIES, CredentialManager
 from executive_copilot.services.accounts import TOKEN_SERVICES, AccountsService
 
 PROCESS_STARTED = datetime.now(UTC)

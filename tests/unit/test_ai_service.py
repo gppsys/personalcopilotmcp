@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from executive_copilot.admin.credentials import CredentialManager
 from executive_copilot.config import AIConfig, AppConfig, ModelRoutingConfig
+from executive_copilot.credentials import CredentialManager
 from executive_copilot.exceptions import ConfigurationError
 from executive_copilot.services.ai import AIMessage, AIService, AITextRequest
 

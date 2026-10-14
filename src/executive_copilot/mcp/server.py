@@ -9,8 +9,8 @@ from uuid import uuid4
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware
 
-from executive_copilot.admin.credentials import CredentialManager
 from executive_copilot.config import AppConfig
+from executive_copilot.credentials import CredentialManager
 from executive_copilot.logging import get_logger
 from executive_copilot.mcp.activity import get_tracker
 from executive_copilot.providers.calendar.google import GoogleCalendarProvider
@@ -2129,7 +2129,7 @@ def create_mcp_server(
         Returns:
             Comprehensive relationship summary
         """
-        from executive_copilot.admin.credentials import CredentialManager
+        from executive_copilot.credentials import CredentialManager
         from executive_copilot.database import DatabaseManager
         from executive_copilot.services.relationship import RelationshipService
 
@@ -2168,7 +2168,7 @@ def create_mcp_server(
         Returns:
             Recent interactions with this person
         """
-        from executive_copilot.admin.credentials import CredentialManager
+        from executive_copilot.credentials import CredentialManager
         from executive_copilot.database import DatabaseManager
         from executive_copilot.services.relationship import RelationshipService
 
@@ -2213,7 +2213,7 @@ def create_mcp_server(
         Returns:
             List of stale relationships needing attention
         """
-        from executive_copilot.admin.credentials import CredentialManager
+        from executive_copilot.credentials import CredentialManager
         from executive_copilot.database import DatabaseManager
         from executive_copilot.services.relationship import RelationshipService
 
@@ -2262,7 +2262,7 @@ def create_mcp_server(
         Returns:
             Context for each attendee
         """
-        from executive_copilot.admin.credentials import CredentialManager
+        from executive_copilot.credentials import CredentialManager
         from executive_copilot.database import DatabaseManager
         from executive_copilot.services.relationship import RelationshipService
 

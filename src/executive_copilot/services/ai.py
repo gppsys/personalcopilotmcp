@@ -5,8 +5,8 @@ from openai import APIStatusError, AsyncOpenAI
 from openai import RateLimitError as OpenAIRateLimitError
 from pydantic import BaseModel, Field
 
-from executive_copilot.admin.credentials import CredentialManager
 from executive_copilot.config import AIProvider
+from executive_copilot.credentials import CredentialManager
 from executive_copilot.exceptions import ConfigurationError, ExternalServiceError, RateLimitError
 from executive_copilot.services.base import Service
 

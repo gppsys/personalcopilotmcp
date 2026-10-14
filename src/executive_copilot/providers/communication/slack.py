@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from executive_copilot.admin.credentials import CredentialManager
+from executive_copilot.credentials import CredentialManager
 from executive_copilot.exceptions import AuthenticationError, ProviderError
 from executive_copilot.providers.base import ProviderCapability, ProviderInfo
 
@@ -78,7 +78,7 @@ class SlackProvider:
             )
 
         response.raise_for_status()
-        data = response.json()
+        data: dict[str, Any] = response.json()
         if not data.get("ok"):
             error = data.get("error", "unknown_error")
             raise ProviderError(

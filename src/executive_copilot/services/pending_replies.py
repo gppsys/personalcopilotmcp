@@ -3,8 +3,8 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from executive_copilot.admin.credentials import CredentialManager
 from executive_copilot.config import AppConfig
+from executive_copilot.credentials import CredentialManager
 from executive_copilot.database.connection import DatabaseManager
 from executive_copilot.database.repositories import FollowUpRepository, ProcessedItemRepository
 from executive_copilot.logging import get_logger

@@ -7,10 +7,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from executive_copilot.admin.credentials import CredentialManager
 from executive_copilot.admin.workspace_api import create_workspace_router
 from executive_copilot.config import AppConfig
 from executive_copilot.config.loader import ConfigLoader, load_ui_settings, save_ui_settings
+from executive_copilot.credentials import CredentialManager
 from executive_copilot.services.accounts import AccountsService
 from executive_copilot.services.knowledge_graph import (
     GraphBuilder,

@@ -418,7 +418,7 @@ async def run_serve(config: "AppConfig", args: object) -> int:  # type: ignore[n
 
 async def run_sync_replies(config: "AppConfig", args: object) -> int:  # type: ignore[name-defined]
     """Sync pending replies from sent emails."""
-    from executive_copilot.admin.credentials import CredentialManager
+    from executive_copilot.credentials import CredentialManager
     from executive_copilot.database.connection import init_database
     from executive_copilot.services.pending_replies import PendingRepliesService
 
@@ -467,7 +467,7 @@ async def run_sync_replies(config: "AppConfig", args: object) -> int:  # type: i
 
 async def run_scan_commitments(config: "AppConfig", args: object) -> int:  # type: ignore[name-defined]
     """Scan emails for commitments."""
-    from executive_copilot.admin.credentials import CredentialManager
+    from executive_copilot.credentials import CredentialManager
     from executive_copilot.database.connection import init_database
     from executive_copilot.services.commitment_detection import CommitmentDetectionService
 

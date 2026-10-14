@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from executive_copilot.admin.credentials import OAUTH_FAMILIES, CredentialManager
+from executive_copilot.credentials import OAUTH_FAMILIES, CredentialManager
 
 # provider_name used in organizations.yaml -> OAuth family
 PROVIDER_FAMILY = {

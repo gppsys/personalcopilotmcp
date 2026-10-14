@@ -2,8 +2,8 @@
 
 from typing import TYPE_CHECKING, TypeVar
 
-from executive_copilot.admin.credentials import CredentialManager
 from executive_copilot.config import AppConfig
+from executive_copilot.credentials import CredentialManager
 from executive_copilot.database import DatabaseManager
 from executive_copilot.logging import get_logger
 from executive_copilot.providers.base import ProviderRegistry

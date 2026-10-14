@@ -7,9 +7,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from executive_copilot.admin.credentials import CredentialManager
 from executive_copilot.config import AppConfig
 from executive_copilot.config.models import CalendarDefaultsConfig
+from executive_copilot.credentials import CredentialManager
 from executive_copilot.services.email_calendar import (
     EmailCalendarService,
     graph_event_fields,

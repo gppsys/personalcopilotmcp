@@ -7,8 +7,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from executive_copilot.admin.credentials import CredentialManager
 from executive_copilot.admin.workspace_api import create_workspace_router
+from executive_copilot.credentials import CredentialManager
 from executive_copilot.services.chat import PROPOSALS, TOOLS, WorkspaceChat
 
 NOTE = "# PCI\n\n## 2026-08-25\n- Auditoría de proveedores.\n"

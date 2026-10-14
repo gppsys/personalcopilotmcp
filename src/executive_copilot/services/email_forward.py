@@ -7,8 +7,8 @@ from typing import Any
 
 import yaml
 
-from executive_copilot.admin.credentials import CredentialManager
 from executive_copilot.config import AppConfig
+from executive_copilot.credentials import CredentialManager
 from executive_copilot.logging import get_logger
 from executive_copilot.providers.email.gmail import GmailProvider
 from executive_copilot.providers.email.outlook import OutlookProvider

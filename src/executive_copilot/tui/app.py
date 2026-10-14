@@ -9,7 +9,7 @@ from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.table import Table
 
 from executive_copilot.admin.config_manager import ConfigManager
-from executive_copilot.admin.credentials import CredentialManager
+from executive_copilot.credentials import CredentialManager
 
 console = Console()
 

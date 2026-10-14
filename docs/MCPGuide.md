@@ -320,10 +320,15 @@ Tools return error information when operations fail:
 ### stdio (default)
 Standard input/output, used by Claude Desktop.
 
-### SSE (planned)
-Server-Sent Events for web clients.
+### Streamable HTTP
+For clients that speak streamable HTTP (e.g. Claude Code). Serves `/mcp`,
+localhost only, opt-in via the `http` compose profile. It has no
+authentication by default; a workspace key protects it when configured.
 
 ```bash
-# Run with SSE transport
-uv run copilot mcp --transport sse
+docker compose --profile http up -d
+claude mcp add --transport http executive-copilot http://127.0.0.1:8091/mcp
+
+# Or without Docker
+uv run copilot mcp --transport http --port 8091
 ```

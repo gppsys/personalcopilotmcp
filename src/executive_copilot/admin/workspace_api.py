@@ -17,7 +17,7 @@ from executive_copilot.services.workspace import WorkspaceService
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from executive_copilot.admin.credentials import CredentialManager
+    from executive_copilot.credentials import CredentialManager
 
 logger = get_logger(__name__)
 

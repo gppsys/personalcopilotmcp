@@ -6,8 +6,8 @@ from uuid import uuid4
 
 import httpx
 
-from executive_copilot.admin.credentials import CredentialManager
 from executive_copilot.admin.oauth import OAuthManager
+from executive_copilot.credentials import CredentialManager
 from executive_copilot.logging import get_logger
 from executive_copilot.models.base import ProviderReference
 from executive_copilot.models.email import Email, EmailAddress, EmailPriority

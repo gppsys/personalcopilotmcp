@@ -10,8 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from executive_copilot.admin.config_manager import ConfigManager
-from executive_copilot.admin.credentials import CredentialManager
 from executive_copilot.admin.oauth import OAuthManager
+from executive_copilot.credentials import CredentialManager
 from executive_copilot.logging import get_logger
 
 logger = get_logger(__name__)

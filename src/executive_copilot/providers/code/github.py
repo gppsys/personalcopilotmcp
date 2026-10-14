@@ -12,7 +12,7 @@ import httpx
 from executive_copilot.logging import get_logger
 
 if TYPE_CHECKING:
-    from executive_copilot.admin.credentials import CredentialManager
+    from executive_copilot.credentials import CredentialManager
 
 logger = get_logger(__name__)
 

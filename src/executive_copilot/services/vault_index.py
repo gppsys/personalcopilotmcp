@@ -687,7 +687,7 @@ class Embedder:
 
 def build_embedder(config: Any) -> Embedder | None:
     """Embedder from the stored OpenAI key, or None when not available."""
-    from executive_copilot.admin.credentials import CredentialManager
+    from executive_copilot.credentials import CredentialManager
 
     cred = CredentialManager(Path(config.config_dir) / ".credentials").get_credential(
         config.ai.credential_provider_type, config.ai.effective_credential_name

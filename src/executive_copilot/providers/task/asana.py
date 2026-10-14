@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from executive_copilot.admin.credentials import CredentialManager
+from executive_copilot.credentials import CredentialManager
 from executive_copilot.models import Task, TaskStatus
 from executive_copilot.models.base import ProviderReference
 from executive_copilot.providers.task.interface import (
