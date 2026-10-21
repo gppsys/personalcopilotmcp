@@ -57,6 +57,42 @@ async def test_knowledge_requires_configured_auth(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
+async def test_browser_session_reaches_knowledge_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import APIRouter
+
+    from executive_copilot.admin.knowledge_api import knowledge_router
+
+    monkeypatch.setenv("COPILOT_WORKSPACE_ACCESS_TOKEN", "a" * 40)
+
+    async def execute(
+        config: object, credentials: object, action: str, **kwargs: object
+    ) -> dict[str, object]:
+        return {"action": action}
+
+    monkeypatch.setattr("executive_copilot.admin.knowledge_api.execute_knowledge", execute)
+    monkeypatch.setattr("executive_copilot.config.load_config", lambda _dir: AppConfig())
+    app = FastAPI()
+    install_workspace_auth(app)
+    api = APIRouter(prefix="/api/ws")
+    api.include_router(knowledge_router(None, None))
+    app.include_router(api)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        assert (await client.get("/api/ws/knowledge/dashboard")).status_code == 401
+        bearer = {"Authorization": "Bearer " + "a" * 40}
+        assert (await client.get("/api/ws/knowledge/dashboard", headers=bearer)).status_code == 200
+        assert (await client.post("/api/session", json={"token": "a" * 40})).status_code == 200
+        response = await client.get("/api/ws/knowledge/dashboard")
+        assert response.status_code == 200 and response.json() == {"action": "dashboard"}
+        await client.delete("/api/session")
+        client.cookies.set("copilot_session", "forged")
+        assert (await client.get("/api/ws/knowledge/dashboard")).status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_mcp_schema_authorization_and_shared_service(monkeypatch: pytest.MonkeyPatch) -> None:
     from fastmcp import FastMCP
 

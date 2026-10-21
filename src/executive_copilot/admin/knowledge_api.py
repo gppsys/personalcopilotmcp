@@ -29,11 +29,14 @@ def knowledge_router(config_dir: Any, credentials: Any) -> APIRouter:
     async def run(request: Request, action: str, **kwargs: Any) -> Any:
         from executive_copilot.config import load_config
 
-        token = request.headers.get("authorization", "").removeprefix(
-            "Bearer "
-        ) or request.cookies.get(COOKIE)
+        # The browser cookie is a server-side session id, never the key itself.
+        sessions = getattr(request.app.state, "workspace_sessions", None)
+        session = request.cookies.get(COOKIE, "")
         try:
-            authorize_knowledge(token)
+            if not (sessions and session and sessions.valid(session)):
+                authorize_knowledge(
+                    request.headers.get("authorization", "").removeprefix("Bearer ")
+                )
             return await execute_knowledge(load_config(config_dir), credentials, action, **kwargs)
         except PermissionError:
             raise HTTPException(401, "Knowledge access denied") from None
