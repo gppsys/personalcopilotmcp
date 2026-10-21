@@ -52,18 +52,27 @@ SECRET_PATTERNS = [
     re.compile(r"\bxox[abpr]-[A-Za-z0-9\-]{10,}\b"),          # Slack tokens
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),            # GitHub tokens
     re.compile(r"\b\d/[A-Za-z0-9_\-]{30,}\b"),                # Asana PATs
+    # The value stays on the key's line, and $VAR / <placeholder> / {var} are not values.
     re.compile(
         r"(?i)\b(password|passwd|contrase[nñ]a|secret|token|api[_ -]?key|auth[_ -]?token|client[_ -]?secret)"
-        r"(\s*(?:\*\*)?\s*[:=]\s*(?:\*\*)?\s*)([`'\"]?)[^\s`'\"*]{8,}\3"
+        r"([ \t]*(?:\*\*)?[ \t]*[:=][ \t]*(?:\*\*)?[ \t]*)([`'\"]?)(?![$<{])[^\s`'\"*]{8,}\3"
     ),
 ]
+
+
+def _labelled_value(match: re.Match[str]) -> str:
+    value = match.group(0)[len(match.group(1)) + len(match.group(2)) :].strip("`'\"")
+    # "**Token:** rechazada …" is a bold label followed by prose, not a credential.
+    if "**" in match.group(2) and value.isalpha() and value.islower():
+        return match.group(0)
+    return f"{match.group(1)}{match.group(2)}[REDACTED]"
 
 
 def redact(text: str) -> str:
     """Replace credential-looking values with [REDACTED]."""
     for pattern in SECRET_PATTERNS:
         if pattern.groups >= 3:
-            text = pattern.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", text)
+            text = pattern.sub(_labelled_value, text)
         else:
             text = pattern.sub("[REDACTED]", text)
     return text

@@ -28,7 +28,7 @@ from executive_copilot.services.knowledge.documents import (
 )
 from executive_copilot.services.knowledge.locking import KnowledgeBusy
 from executive_copilot.services.knowledge.repository import KnowledgeRepository
-from executive_copilot.services.vault_index import best_snippet, redact
+from executive_copilot.services.vault_index import SECRET_PATTERNS, best_snippet, redact
 
 if TYPE_CHECKING:
     from executive_copilot.config.models import KnowledgeConfig
@@ -37,6 +37,8 @@ logger = get_logger(__name__)
 
 # Only these touch the vault or the remote; reads run without the shared lock.
 WRITE_ACTIONS = {"confirm", "sync"}
+# Cached per-note checks are only valid for the credential patterns that produced them.
+PATTERNS = digest(json.dumps([p.pattern for p in SECRET_PATTERNS]))
 
 
 def now() -> str:
@@ -184,6 +186,8 @@ class KnowledgeService:
         """Content digest per readable local note, re-reading only files whose stat changed."""
         stats = await self.inventory()
         cache: dict[str, list[Any]] = await self.repository.get_state("local_stat", {})
+        if await self.repository.get_state("local_stat_patterns") != PATTERNS:
+            cache = {}
         fresh: dict[str, list[Any]] = {}
         for path, (mtime, size) in stats.items():
             cached = cache.get(path)
@@ -199,6 +203,7 @@ class KnowledgeService:
                 fresh[path] = [mtime, size, digest(content), None]
         if fresh != cache:
             await self.repository.put_state("local_stat", fresh)
+            await self.repository.put_state("local_stat_patterns", PATTERNS)
         self.unavailable = {p: v[3] for p, v in fresh.items() if v[3]}
         return {p: v[2] for p, v in fresh.items() if v[2]}
 
@@ -237,7 +242,7 @@ class KnowledgeService:
     async def index(self, force: bool = False) -> dict[str, Any]:
         # Reads call this on every request: when no file stat changed, skip reading the vault.
         inventory = list((await self.inventory()).items())
-        stats = digest(json.dumps([inventory, sorted(self.settings.exclude)]))
+        stats = digest(json.dumps([inventory, sorted(self.settings.exclude), PATTERNS]))
         summary = await self.repository.get_state("index_summary")
         fingerprint = await self.repository.get_state("index_fingerprint")
         if not force and summary and fingerprint and summary.get("stats") == stats:

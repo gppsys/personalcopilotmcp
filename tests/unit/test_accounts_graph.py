@@ -286,6 +286,20 @@ def test_redaction_hides_credentials() -> None:
     assert "Decidimos usar tokens de un solo uso." in out
 
 
+def test_redaction_ignores_placeholders_empty_values_and_prose() -> None:
+    from executive_copilot.services.vault_index import redact
+
+    text = (
+        '-H "x-api-key: $SAFE_API_KEY" \\\n'
+        "Authorization token: <YOUR_TOKEN_HERE>\n"
+        "API_KEY=\nSECRET_KEY=\n"
+        "1. **Consentimiento como atributo del token:** rechazada — no escala.\n"
+    )
+    assert redact(text) == text
+    assert "s3cr3tvalue" not in redact("- **Password:** s3cr3tvalue\n")
+    assert "Abcdefgh12" not in redact("api_key = 'Abcdefgh12'")
+
+
 @pytest.mark.asyncio
 async def test_hybrid_search_ranks_by_meaning_and_falls_back(tmp_path: Path) -> None:
     from executive_copilot.services.vault_index import VaultIndex
