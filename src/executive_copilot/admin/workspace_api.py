@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from executive_copilot.logging import get_logger
 from executive_copilot.services.accounts import AccountsService
+from executive_copilot.services.security_scan import SecurityScanService
 from executive_copilot.services.status import StatusService
 from executive_copilot.services.workspace import WorkspaceService
 
@@ -118,6 +119,28 @@ class ChatInput(BaseModel):
     model: str | None = None
 
 
+class SecurityStateInput(BaseModel):
+    state: str
+    note: str | None = None
+
+
+class WatchItemInput(BaseModel):
+    product: str
+    name: str | None = None
+    cpe: str | None = None
+    cycles: int | None = Field(default=None, ge=1, le=6)
+    lts_only: bool | None = None
+    where: list[str] = Field(default_factory=list)
+
+
+class SecuritySettingsInput(BaseModel):
+    enabled: bool | None = None
+    cycles: int | None = Field(default=None, ge=1, le=6)
+    scan_repos: bool | None = None
+    use_ai: bool | None = None
+    eol_warning_days: int | None = Field(default=None, ge=0)
+
+
 def create_workspace_router(config_dir: Path, credential_manager: CredentialManager) -> APIRouter:
     """Routes for the workspace page. Config is re-read per request so edits apply live."""
     router = APIRouter(prefix="/api/ws", tags=["workspace"])
@@ -142,7 +165,13 @@ def create_workspace_router(config_dir: Path, credential_manager: CredentialMana
 
     @router.get("/overview")
     async def overview() -> dict[str, Any]:
+        from executive_copilot.services.security_store import SecurityStore
+
         result = await ws().overview()
+        try:
+            result["security"] = SecurityStore().summary()
+        except Exception as e:  # a broken activity.db must not take Hoy down
+            logger.warning("Security summary unavailable", error=str(e))
         result["calendar_review"] = state.get("calendar_review")
         return result
 
@@ -351,6 +380,116 @@ def create_workspace_router(config_dir: Path, credential_manager: CredentialMana
             state["checks"] = await status().probe()
             state["checks_at"] = time.monotonic()
         return {"checks": state["checks"]}
+
+    # --- security ---------------------------------------------------------
+
+    def security(ai: bool = False) -> SecurityScanService:
+        service = ws()
+        return SecurityScanService(service.config, credential_manager, service.ai_service() if ai else None)
+
+    def security_section() -> dict[str, Any]:
+        """Current ``security:`` section as saved in config/security.yaml (watchlist + flags)."""
+        from executive_copilot.config import load_config
+        from executive_copilot.config.loader import load_security_settings
+
+        saved = load_security_settings(config_dir)
+        if saved:
+            return saved
+        # First save: start from the effective config so hand-edited values are kept.
+        return load_config(config_dir).security.model_dump(exclude_none=True)
+
+    @router.get("/security")
+    async def security_overview(watchlist: bool = True) -> dict[str, Any]:
+        return await security().overview(with_watchlist=watchlist)
+
+    @router.post("/security/run")
+    async def security_run() -> dict[str, Any]:
+        """Run the scan now; recorded in the job run log like a scheduled run."""
+        from datetime import datetime
+
+        from executive_copilot.automation.jobs import JobResult, JobStatus
+        from executive_copilot.automation.run_log import get_run_log
+
+        service = security(ai=True)
+        started_at = datetime.utcnow()
+        if not service.settings.enabled:
+            raise HTTPException(status_code=400, detail="La revisión de seguridad está desactivada")
+        stats = await service.scan()
+        failed = "error" in stats
+        completed_at = datetime.utcnow()
+        get_run_log().record(JobResult(
+            job_name="security_scan",
+            status=JobStatus.FAILED if failed else JobStatus.COMPLETED,
+            started_at=started_at,
+            completed_at=completed_at,
+            duration_seconds=(completed_at - started_at).total_seconds(),
+            items_processed=stats.get("findings", 0),
+            error_message=stats.get("error"),
+            details=stats,
+        ))
+        if failed:
+            raise HTTPException(status_code=502, detail=stats["error"])
+        return {"status": "completed", "details": stats}
+
+    @router.post("/security/findings/{finding_id:path}")
+    async def security_set_state(finding_id: str, payload: SecurityStateInput) -> dict[str, Any]:
+        from executive_copilot.services.security_store import SecurityStore
+
+        try:
+            row = SecurityStore().set_state(finding_id, payload.state, payload.note)
+        except ValueError as e:
+            raise bad_request(e) from e
+        if row is None:
+            raise HTTPException(status_code=404, detail="finding not found")
+        return row
+
+    @router.put("/security/settings")
+    async def security_settings(payload: SecuritySettingsInput) -> dict[str, Any]:
+        from executive_copilot.config.loader import save_security_settings
+
+        section = security_section()
+        section.update({k: v for k, v in payload.model_dump().items() if v is not None})
+        save_security_settings(config_dir, section)
+        return await security().overview(with_watchlist=False)
+
+    @router.post("/security/watchlist")
+    async def security_add_watch(payload: WatchItemInput) -> dict[str, Any]:
+        """Add or replace a watched product; the slug is validated against endoflife.date."""
+        import httpx
+
+        from executive_copilot.config.loader import save_security_settings
+        from executive_copilot.services.security_scan import EOL_API
+
+        product = payload.product.strip().lower()
+        if not product:
+            raise HTTPException(status_code=400, detail="product is required")
+        try:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                r = await client.get(f"{EOL_API}/{product}.json")
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=f"endoflife.date no responde: {e}") from e
+        if r.status_code == 404:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{product}' no existe en endoflife.date (usa el slug de la URL, p. ej. 'postgresql')",
+            )
+        section = security_section()
+        items = [i for i in section.get("watchlist", []) if i.get("product") != product]
+        item = {k: v for k, v in payload.model_dump().items() if v not in (None, [], "")}
+        item["product"] = product
+        items.append(item)
+        section["watchlist"] = items
+        save_security_settings(config_dir, section)
+        return await security().overview(with_watchlist=True)
+
+    @router.delete("/security/watchlist/{product}")
+    async def security_remove_watch(product: str) -> dict[str, Any]:
+        from executive_copilot.config.loader import save_security_settings
+
+        section = security_section()
+        section["watchlist"] = [i for i in section.get("watchlist", []) if i.get("product") != product]
+        save_security_settings(config_dir, section)
+        return await security().overview(with_watchlist=True)
 
     # --- calendar settings --------------------------------------------------
 

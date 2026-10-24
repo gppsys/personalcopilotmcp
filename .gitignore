@@ -126,6 +126,8 @@ config/email_forward_rules.yaml
 
 # Settings saved from the web workspace
 config/ui_settings.yaml
+config/security.yaml
+security_state.json
 
 # Copies of Obsidian notes saved before the assistant edits them
 vault_backups/

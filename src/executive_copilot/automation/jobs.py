@@ -646,6 +646,39 @@ class KnowledgeSyncJob(Job):
         )
 
 
+class SecurityScanJob(Job):
+    """Daily review of advisories for the stack: repo lock files (OSV), watched products (NVD, endoflife)."""
+
+    async def execute(self) -> JobResult:
+        from executive_copilot.services.security_scan import SecurityScanService
+
+        started_at = datetime.utcnow()
+        config = self._container.config
+        if not config.security.enabled:
+            return JobResult(job_name=self.name, status=JobStatus.SKIPPED, started_at=started_at,
+                             details={"reason": "security.enabled is false"})
+
+        ai_service = None
+        if config.security.use_ai and self._settings.get("use_ai", True):
+            try:
+                ai_service = self._container.ai
+            except Exception as e:
+                self._logger.warning("AI unavailable, scan without note", error=str(e))
+
+        service = SecurityScanService(config, self._container.credential_manager, ai_service)
+        stats = await service.scan()
+        if "error" in stats:
+            return JobResult(job_name=self.name, status=JobStatus.FAILED, started_at=started_at,
+                             error_message=stats["error"], details=stats)
+        return JobResult(
+            job_name=self.name,
+            status=JobStatus.COMPLETED,
+            started_at=started_at,
+            items_processed=stats.get("findings", 0),
+            details=stats,
+        )
+
+
 # Job registry
 JOB_TYPES: dict[str, type[Job]] = {
     "email_sync": EmailSyncJob,
@@ -662,4 +695,5 @@ JOB_TYPES: dict[str, type[Job]] = {
     "obsidian_meeting_sync": ObsidianMeetingSyncJob,
     "github_docs_sync": GitHubDocsSyncJob,
     "knowledge_sync": KnowledgeSyncJob,
+    "security_scan": SecurityScanJob,
 }

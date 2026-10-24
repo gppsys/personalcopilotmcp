@@ -364,6 +364,46 @@ class GitHubDocsConfig(BaseModel):
     )
 
 
+class SecurityWatchItem(BaseModel):
+    """One product of the stack to watch (runtime, server, database, framework)."""
+
+    product: str = Field(description="endoflife.date slug, e.g. php, nodejs, postgresql, mariadb, apache")
+    name: str | None = Field(default=None, description="Display name (default: from the known products table)")
+    cpe: str | None = Field(default=None, description="CPE 2.3 prefix for NVD, e.g. cpe:2.3:a:php:php")
+    cycles: int | None = Field(default=None, ge=1, le=6, description="Release lines to watch (default: security.cycles)")
+    lts_only: bool | None = Field(default=None, description="Only LTS release lines (default: per product)")
+    where: list[str] = Field(default_factory=list, description="Where it runs (free text, shown in the UI)")
+
+
+class SecurityIgnore(BaseModel):
+    """An advisory accepted or not applicable."""
+
+    id: str = Field(description="CVE/GHSA id")
+    reason: str | None = Field(default=None)
+    until: str | None = Field(default=None, description="Stop ignoring after this date (YYYY-MM-DD)")
+
+
+class SecurityConfig(BaseModel):
+    """Daily review of security advisories for the stack (repos + watched products).
+
+    Sources are public and keyless: OSV.dev for npm/Packagist packages found in the
+    repositories' lock files, NVD for watched products, endoflife.date for release
+    lines reaching end of life. Everything the model sees is already structured
+    data; the model never decides severities.
+    """
+
+    enabled: bool = Field(default=False, description="Run the daily scan and show the Seguridad view")
+    cycles: int = Field(default=2, ge=1, le=6, description="Release lines watched per product (newest first)")
+    lookback_days: int = Field(default=120, ge=7, le=120, description="How far back NVD advisories are read")
+    eol_warning_days: int = Field(default=180, ge=0, description="Warn this many days before a release line ends")
+    scan_repos: bool = Field(default=True, description="Read lock files of the GitHub repositories (github_docs)")
+    max_lockfile_kb: int = Field(default=3000, description="Skip larger lock files")
+    use_ai: bool = Field(default=True, description="One short AI note prioritizing the new findings of the day")
+    state_file: str = Field(default="security_state.json", description="Cached inventory and last AI note")
+    watchlist: list[SecurityWatchItem] = Field(default_factory=list)
+    ignore: list[SecurityIgnore] = Field(default_factory=list)
+
+
 class CalendarDefaultsConfig(BaseModel):
     """Where new events go when the caller does not name a calendar."""
 
@@ -458,6 +498,7 @@ class AppConfig(BaseSettings):
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     calendar_defaults: CalendarDefaultsConfig = Field(default_factory=CalendarDefaultsConfig)
     email_calendar: EmailCalendarConfig = Field(default_factory=EmailCalendarConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
 
     @model_validator(mode="before")
     @classmethod

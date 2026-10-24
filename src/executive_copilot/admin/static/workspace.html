@@ -145,6 +145,17 @@
             <p class="text-slate-500 dark:text-slate-400 mt-1" x-text="overviewLine()"></p>
           </div>
 
+          <template x-if="overview?.security && (overview.security.critical || overview.security.high || overview.security.new_today)">
+            <button @click="go('security')" class="w-full text-left mb-6 flex items-center gap-3 rounded-2xl px-4 py-3 border shadow-sm transition"
+              :class="overview.security.critical ? 'bg-rose-50 border-rose-200 text-rose-800 dark:bg-rose-950/40 dark:border-rose-900 dark:text-rose-200' : 'bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-950/40 dark:border-amber-900 dark:text-amber-200'">
+              <span class="w-5 h-5 shrink-0" x-html="icons.shield"></span>
+              <span class="text-sm"><span class="font-semibold">Seguridad:</span>
+                <span x-text="[overview.security.critical ? overview.security.critical + ' críticos' : '', overview.security.high ? overview.security.high + ' altos' : '', overview.security.new_today ? overview.security.new_today + ' nuevos hoy' : ''].filter(Boolean).join(' · ')"></span>
+              </span>
+              <span class="ml-auto text-xs underline underline-offset-2">Ver</span>
+            </button>
+          </template>
+
           <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
             <template x-for="s in stats()" :key="s.label">
               <button @click="s.go && go(s.go)" class="text-left rounded-2xl p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-indigo-300 dark:hover:border-indigo-500/50 transition shadow-sm">
@@ -721,6 +732,194 @@
           </div>
         </section>
 
+        <!-- ============ SEGURIDAD ============ -->
+        <section x-show="view === 'security'" x-cloak>
+          <div class="console rounded-2xl p-4 md:p-6 space-y-5 text-slate-200">
+            <template x-if="!security">
+              <div class="mono text-sm text-slate-400 py-16 text-center">leyendo hallazgos<span class="dots"><span>.</span><span>.</span><span>.</span></span></div>
+            </template>
+
+            <template x-if="security">
+              <div class="space-y-5">
+                <!-- Banner -->
+                <div class="flex flex-wrap items-center gap-4">
+                  <div class="relative h-4 w-4 shrink-0">
+                    <span class="absolute inset-0 rounded-full animate-ping opacity-50" :class="securityState().dot"></span>
+                    <span class="relative block h-4 w-4 rounded-full" :class="securityState().dot"></span>
+                  </div>
+                  <div class="min-w-0">
+                    <div class="text-xl md:text-2xl font-semibold tracking-tight text-white" x-text="securityState().label"></div>
+                    <div class="mono text-[11px] text-slate-400 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+                      <span x-show="security.last_run">última revisión <span class="text-slate-200" x-text="security.last_run ? ago(security.last_run.started_at) : ''"></span></span>
+                      <span x-show="!security.last_run">sin revisiones todavía</span>
+                      <span x-show="security.last_scan">repos <span class="text-slate-200" x-text="security.last_scan?.stats?.repos ?? 0"></span> · paquetes <span class="text-slate-200" x-text="security.last_scan?.stats?.packages ?? 0"></span> · productos <span class="text-slate-200" x-text="security.last_scan?.stats?.products ?? 0"></span></span>
+                      <span>ramas vigiladas por producto: <span class="text-slate-200" x-text="security.cycles"></span></span>
+                      <span class="text-rose-300" x-show="security.last_run?.status === 'failed'" x-text="security.last_run?.error_message"></span>
+                    </div>
+                  </div>
+                  <div class="ml-auto flex items-center gap-2">
+                    <button x-show="!security.enabled" @click="saveSecuritySettings({ enabled: true })" class="px-3 py-2 rounded-lg text-sm font-medium bg-emerald-500/90 hover:bg-emerald-400 text-white">Activar revisión diaria</button>
+                    <button x-show="security.enabled" @click="runSecurityScan()" :disabled="securityBusy"
+                      class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-indigo-500/90 hover:bg-indigo-400 text-white disabled:opacity-60 shadow-[0_0_20px_rgb(99_102_241/.35)]">
+                      <span class="w-4 h-4" :class="securityBusy ? 'animate-spin' : ''" x-html="securityBusy ? icons.refresh : icons.shield"></span>
+                      <span x-text="securityBusy ? 'Revisando…' : 'Revisar ahora'"></span>
+                    </button>
+                  </div>
+                </div>
+
+                <template x-if="!security.enabled">
+                  <div class="panel p-4 text-sm text-slate-300">La revisión diaria está desactivada. Al activarla, cada día hábil a las 6:45 se cruzan los <span class="text-white">lock files</span> de tus repositorios (OSV.dev) y los productos de la lista (NVD, endoflife.date) y los hallazgos nuevos aparecen aquí y en Hoy.</div>
+                </template>
+
+                <!-- Errors of the last run -->
+                <template x-if="(security.last_run?.details?.errors || []).length">
+                  <div class="panel p-3 border-amber-400/30 bg-amber-500/[.06]">
+                    <template x-for="e in security.last_run.details.errors.slice(0, 6)" :key="e">
+                      <div class="flex items-start gap-2 py-0.5 text-sm"><span class="mono text-[10px] mt-0.5 px-1.5 rounded bg-amber-500/20 text-amber-300">WARN</span><span class="text-slate-300 truncate" x-text="e"></span></div>
+                    </template>
+                  </div>
+                </template>
+
+                <!-- KPIs -->
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <template x-for="k in securityKpis()" :key="k.label">
+                    <button @click="securityFilter = k.filter" class="panel p-3.5 relative overflow-hidden text-left hover:border-indigo-400/40 transition" :class="securityFilter === k.filter ? 'border-indigo-400/60' : ''">
+                      <div class="text-[11px] uppercase tracking-wider text-slate-400" x-text="k.label"></div>
+                      <div class="mono text-2xl font-semibold mt-1" :class="k.tone" x-text="k.value"></div>
+                      <div class="text-[11px] text-slate-500 mt-0.5 truncate" x-text="k.hint"></div>
+                      <div class="absolute -right-6 -bottom-6 w-20 h-20 rounded-full blur-2xl opacity-30" :class="k.glow"></div>
+                    </button>
+                  </template>
+                </div>
+
+                <!-- AI note -->
+                <template x-if="security.ai_note?.text">
+                  <div class="panel p-4 border-indigo-400/20">
+                    <div class="flex items-center gap-2 mb-1.5"><span class="w-4 h-4 text-indigo-300" x-html="icons.spark"></span><span class="text-sm font-semibold text-white">Qué atender primero</span><span class="mono text-[11px] text-slate-500" x-text="ago(security.ai_note.at)"></span></div>
+                    <div class="text-sm text-slate-300 leading-relaxed prose-note [&_strong]:text-white [&_ul]:list-disc [&_ul]:pl-5 [&_p+p]:mt-2" x-html="md(security.ai_note.text)"></div>
+                  </div>
+                </template>
+
+                <!-- Watchlist -->
+                <div class="panel overflow-hidden">
+                  <div class="flex items-center gap-2 px-4 py-3 border-b border-slate-700/50">
+                    <h3 class="text-sm font-semibold text-white">Qué vigilamos</h3>
+                    <span class="mono text-[11px] text-slate-500" x-text="security.watchlist.length + ' productos'"></span>
+                  </div>
+                  <div class="grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-px bg-slate-800/50">
+                    <template x-for="w in security.watchlist" :key="w.product">
+                      <div class="px-4 py-3 bg-[#0b1120]/90 min-w-0">
+                        <div class="flex items-center gap-2">
+                          <span class="text-sm font-medium text-white" x-text="w.name"></span>
+                          <span class="mono text-[10px] text-slate-500" x-text="w.osv ? 'OSV' : (w.cpe ? 'NVD' : 'solo EOL')"></span>
+                          <span x-show="w.lts_only" class="mono text-[10px] px-1 rounded bg-slate-700/60 text-slate-300">LTS</span>
+                          <button @click="removeWatch(w)" class="ml-auto text-slate-600 hover:text-rose-400 w-4 h-4" title="Dejar de vigilar" x-html="icons.close"></button>
+                        </div>
+                        <div class="text-[11px] text-slate-500" x-show="(w.where || []).length" x-text="'en ' + w.where.join(', ')"></div>
+                        <div class="text-[11px] text-rose-300 mono" x-show="w.error" x-text="w.error"></div>
+                        <div class="mt-1.5 space-y-1">
+                          <template x-for="c in (w.cycles_info || [])" :key="c.cycle">
+                            <div class="flex items-center gap-2 mono text-[11px]">
+                              <span class="text-slate-200 w-10" x-text="c.cycle"></span>
+                              <span class="text-slate-400" x-text="'último ' + c.latest"></span>
+                              <span class="ml-auto" :class="c.days_left === null ? 'text-slate-500' : c.days_left < 0 ? 'text-rose-300' : c.days_left < 180 ? 'text-amber-300' : 'text-slate-500'" x-text="eolLabel(c)"></span>
+                            </div>
+                          </template>
+                          <div x-show="!(w.cycles_info || []).length && !w.error" class="mono text-[11px] text-slate-600">sin datos de ramas</div>
+                        </div>
+                      </div>
+                    </template>
+                    <div x-show="!security.watchlist.length" class="px-4 py-6 text-sm text-slate-500 col-span-full bg-[#0b1120]/90">Agrega los productos de tu stack: PHP, Node.js, Apache, MariaDB, PostgreSQL, Laravel…</div>
+                  </div>
+                  <form @submit.prevent="addWatch()" class="px-4 py-3 border-t border-slate-700/50 flex flex-wrap gap-2 items-center">
+                    <div class="flex gap-2 flex-1 min-w-[220px]">
+                      <select x-model="newWatch.product" class="flex-1 min-w-0 mono text-xs bg-slate-900/60 border border-slate-700/60 rounded-md px-2 py-1.5 text-slate-200">
+                        <option value="">Producto…</option>
+                        <template x-for="p in security.known_products.filter(p => !security.watchlist.some(w => w.product === p.product))" :key="p.product"><option :value="p.product" x-text="p.name"></option></template>
+                        <option value="__custom">Otro (slug de endoflife.date)</option>
+                      </select>
+                      <input x-show="newWatch.product === '__custom'" x-model="newWatch.custom" placeholder="p. ej. rabbitmq" class="w-28 mono text-xs bg-slate-900/60 border border-slate-700/60 rounded-md px-2 py-1.5 text-slate-200 placeholder:text-slate-600">
+                    </div>
+                    <div class="flex gap-2 flex-1 min-w-[220px]">
+                      <input x-model="newWatch.where" placeholder="dónde corre (opcional, separado por comas)" class="flex-1 min-w-0 mono text-xs bg-slate-900/60 border border-slate-700/60 rounded-md px-2 py-1.5 text-slate-200 placeholder:text-slate-600">
+                      <button type="submit" :disabled="securityBusy || !newWatch.product" class="px-3 py-1.5 rounded-md text-xs font-medium bg-indigo-500/90 hover:bg-indigo-400 text-white disabled:opacity-50">Vigilar</button>
+                    </div>
+                  </form>
+                </div>
+
+                <!-- Findings -->
+                <div class="panel overflow-hidden min-w-0">
+                  <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-slate-700/50">
+                    <h3 class="text-sm font-semibold text-white">Hallazgos</h3>
+                    <span class="mono text-[11px] text-slate-500" x-text="securityFindings().length + ' grupos · ' + securityFindings().reduce((n, g) => n + g.rows.length, 0) + ' hallazgos'"></span>
+                    <div class="ml-auto flex flex-wrap gap-1">
+                      <template x-for="f in [['all','todos'],['critical','críticos'],['high','altos'],['medium','medios'],['low','bajos'],['new','nuevos hoy'],['package','paquetes'],['product','productos'],['eol','fin de soporte'],['reviewed','revisados'],['ignored','ignorados']]" :key="f[0]">
+                        <button @click="securityFilter = f[0]" class="mono text-[11px] px-2 py-1 rounded-md border transition" :class="securityFilter === f[0] ? 'border-indigo-400/60 bg-indigo-500/20 text-white' : 'border-slate-700/60 text-slate-400 hover:text-slate-200'" x-text="f[1]"></button>
+                      </template>
+                    </div>
+                    <input x-model="securityQuery" placeholder="filtrar…" class="mono text-xs bg-slate-900/60 border border-slate-700/60 rounded-md px-2 py-1 w-32 text-slate-200 placeholder:text-slate-600">
+                    <label class="mono text-[11px] text-slate-400 flex items-center gap-1.5 cursor-pointer" title="Dependencias que solo se usan para desarrollar o probar (no corren en producción)"><input type="checkbox" x-model="securityDev" class="accent-indigo-500"> dev <span class="text-slate-600" x-text="'(' + (security.summary.dev_open ?? 0) + ')'"></span></label>
+                  </div>
+                  <div class="flex flex-wrap gap-1 px-4 py-2 border-b border-slate-800/70" x-show="securityRepos().length > 1">
+                    <template x-for="r in securityRepos()" :key="r.repo">
+                      <button @click="securityRepo = securityRepo === r.repo ? '' : r.repo" class="mono text-[10px] px-1.5 py-0.5 rounded border transition flex items-center gap-1" :class="securityRepo === r.repo ? 'border-lime-400/60 bg-lime-500/15 text-white' : 'border-slate-700/60 text-slate-400 hover:text-slate-200'">
+                        <span x-text="r.repo"></span><span class="text-slate-500" x-text="r.n"></span>
+                        <span x-show="r.critical" class="text-rose-300" x-text="r.critical + 'c'"></span><span x-show="r.high" class="text-amber-300" x-text="r.high + 'a'"></span>
+                      </button>
+                    </template>
+                  </div>
+                  <template x-if="!securityFindings().length">
+                    <div class="p-8 text-sm text-slate-500 text-center" x-text="security.findings.length ? 'Nada con este filtro.' : (security.enabled ? 'Sin hallazgos abiertos. 🎉' : 'Activa la revisión para ver hallazgos.')"></div>
+                  </template>
+                  <div class="divide-y divide-slate-800/70 max-h-[70vh] overflow-y-auto scroll-thin">
+                    <template x-for="f in securityFindings()" :key="f.id">
+                      <div class="px-4 py-3 flex gap-3 hover:bg-slate-800/30" :class="f.state !== 'open' ? 'opacity-60' : ''">
+                        <span class="mono text-[10px] mt-0.5 px-1.5 py-0.5 rounded h-fit shrink-0 w-16 text-center" :class="sevClass(f.severity)" x-text="sevLabel(f.severity)"></span>
+                        <div class="min-w-0 flex-1">
+                          <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                            <span class="text-sm font-medium text-white" x-text="f.component"></span>
+                            <span class="mono text-[11px] text-slate-400" x-text="(f.versions || []).join(' · ')"></span>
+                            <template x-for="r in (f.repos || [])" :key="r"><span class="mono text-[10px] px-1.5 py-0.5 rounded bg-lime-500/10 text-lime-300" x-text="r"></span></template>
+                            <span x-show="f.dev" class="mono text-[10px] px-1.5 py-0.5 rounded bg-slate-700/60 text-slate-400" title="Solo dependencia de desarrollo">dev</span>
+                            <span x-show="f.kind === 'eol'" class="mono text-[10px] px-1.5 py-0.5 rounded bg-slate-700/60 text-slate-300">fin de soporte</span>
+                            <span x-show="(f.fixes || []).length" class="mono text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300" x-text="'actualizar a ' + (f.fixes || []).join(' / ')"></span>
+                            <span x-show="f.kind === 'product' && f.details?.affects_latest" class="mono text-[10px] px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300">sin parche en la rama</span>
+                            <span x-show="isToday(f.first_seen)" class="mono text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-200">nuevo</span>
+                          </div>
+                          <div class="text-sm text-slate-300 mt-0.5" x-text="f.title"></div>
+                          <div class="mono text-[11px] text-slate-500 mt-1 flex flex-wrap gap-x-3">
+                            <a :href="f.url" target="_blank" class="hover:text-indigo-300 underline-offset-2 hover:underline" x-text="f.vuln_id || f.source"></a>
+                            <span x-show="f.published" x-text="'publicado ' + (f.published || '').slice(0, 10)"></span>
+                            <span x-text="'visto ' + shortDate(f.first_seen.slice(0, 10))"></span>
+                            <span x-show="(f.details?.where || []).length" x-text="'en ' + (f.details?.where || []).join(', ')"></span>
+                            <span x-show="f.note" class="text-slate-400" x-text="'· ' + f.note"></span>
+                          </div>
+                        </div>
+                        <div class="flex flex-col gap-1 shrink-0 self-start">
+                          <button x-show="f.state === 'open'" @click="setGroupState(f, 'reviewed')" class="mono text-[10px] px-2 py-1 rounded border border-slate-700/60 text-slate-300 hover:border-emerald-400/50 hover:text-emerald-300">revisado</button>
+                          <button x-show="f.state === 'open'" @click="ignoreGroup(f)" class="mono text-[10px] px-2 py-1 rounded border border-slate-700/60 text-slate-400 hover:border-slate-500 hover:text-slate-200">ignorar</button>
+                          <button x-show="f.state !== 'open'" @click="setGroupState(f, 'open')" class="mono text-[10px] px-2 py-1 rounded border border-slate-700/60 text-slate-300 hover:border-indigo-400/50" x-text="'reabrir (' + (f.state === 'ignored' ? 'ignorado' : 'revisado') + ')'"></button>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+
+                <!-- Settings -->
+                <div class="panel p-4 flex flex-wrap items-center gap-x-6 gap-y-2">
+                  <h3 class="text-sm font-semibold text-white">Ajustes</h3>
+                  <label class="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" :checked="security.scan_repos" @change="saveSecuritySettings({ scan_repos: $event.target.checked })" class="accent-indigo-500"> Leer lock files de los repositorios</label>
+                  <label class="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" :checked="security.use_ai" @change="saveSecuritySettings({ use_ai: $event.target.checked })" class="accent-indigo-500"> Nota de IA con lo nuevo del día</label>
+                  <label class="flex items-center gap-2 text-sm text-slate-300">Ramas por producto
+                    <select :value="security.cycles" @change="saveSecuritySettings({ cycles: Number($event.target.value) })" class="mono text-xs bg-slate-900/60 border border-slate-700/60 rounded-md px-2 py-1 text-slate-200"><option>1</option><option>2</option><option>3</option><option>4</option></select>
+                  </label>
+                  <p class="text-[11px] text-slate-500 leading-relaxed basis-full">Fuentes: OSV.dev (npm, Packagist), NVD por CPE, endoflife.date. Sin llaves ni costo. La IA solo redacta la nota; nunca decide severidades.</p>
+                </div>
+              </div>
+            </template>
+          </div>
+        </section>
+
         <!-- ============ ESTADO ============ -->
         <section x-show="view === 'status'" x-cloak>
           <div class="console rounded-2xl p-4 md:p-6 space-y-5 text-slate-200">
@@ -1110,6 +1309,7 @@ const ICONS = {
   expand: svg('<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>'),
   copy: svg('<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'),
   pulse: svg('<path d="M3 12h4l3-8 4 16 3-8h4"/>'),
+  shield: svg('<path d="M12 3l8 3v6c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>'),
   spark: svg('<path d="M12 3l1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2z"/>'),
 };
 
@@ -1139,6 +1339,7 @@ function workspace() {
       { id: 'knowledge', label: 'Conocimiento', icon: 'note' },
       { id: 'map', label: 'Mapa de relaciones', icon: 'graph' },
       { id: 'accounts', label: 'Cuentas', icon: 'key', badge: true },
+      { id: 'security', label: 'Seguridad', icon: 'shield', badge: true },
       { id: 'status', label: 'Estado', icon: 'pulse', badge: true },
     ],
     knowledgeDashboard: null, knowledgeResults: [], knowledgeQuery: '', knowledgeFolder: '', knowledgeTag: '', knowledgeCategory: '',
@@ -1149,7 +1350,7 @@ function workspace() {
     view: 'today',
     dark: document.documentElement.classList.contains('dark'),
     chatOpen: window.innerWidth >= 1280,
-    loading: { today: false, tasks: false, calendar: false, week: false, notes: false, sync: false, map: false, accounts: false, testAll: false, status: false, checks: false },
+    loading: { today: false, tasks: false, calendar: false, week: false, notes: false, sync: false, map: false, accounts: false, testAll: false, status: false, checks: false, security: false },
     busy: { task: false, event: false, note: false, cal: false }, toasts: [],
     overview: null, tasks: null, taskTab: 'asana', taskFilter: '',
     taskTabs: [
@@ -1174,6 +1375,7 @@ function workspace() {
       { id: 'repo', label: 'Repositorios', color: '#a3e635' },
     ],
     accountsData: null, tests: {}, addOpen: false,
+    security: null, securityFilter: 'all', securityQuery: '', securityBusy: false, securityDev: false, securityRepo: '', newWatch: { product: '', custom: '', where: '' },
     status: null, checks: {}, statusTick: 0, STATUS_EVERY: 30, statusTimer: null, nowTs: Date.now(), eventFilter: 'all',
     newAccount: { family: 'google', account_id: '', client_id: '', client_secret: '' },
     calendarsData: null, calSettings: null, calForm: { default: '', email: '__default', sources: [] },
@@ -1239,6 +1441,7 @@ function workspace() {
       if (id === 'knowledge') this.loadKnowledge();
       if (id === 'map') { if (!this.graph) this.loadGraph(); else this.$nextTick(() => this.renderGraph()); }
       if (id === 'accounts' && !this.accountsData) this.loadAccounts();
+      if (id === 'security') this.loadSecurity(!this.security);
       if (id === 'status') {
         this.loadStatus();
         if (!Object.keys(this.checks).length) this.runChecks(false);
@@ -1249,6 +1452,7 @@ function workspace() {
       ({ today: () => this.loadOverview(), tasks: () => this.loadTasks(),
          calendar: () => this.loadWeek(), notes: () => this.loadNotes(),
          knowledge: () => this.loadKnowledge(), map: () => this.loadGraph(), accounts: () => this.loadAccounts(),
+         security: () => this.loadSecurity(true),
          status: () => { this.loadStatus(); this.runChecks(true); } })[this.view]();
     },
     errorsFor(view) {
@@ -1273,6 +1477,7 @@ function workspace() {
       if (id === 'tasks' && this.overview) return (this.overview.tasks_overdue.length + this.overview.follow_ups_overdue.length) || '';
       if (id === 'accounts') return Object.values(this.tests).filter(t => t.ok === false).length || '';
       if (id === 'status') return this.status ? this.allIssues().length || '' : '';
+      if (id === 'security') { const m = this.security?.summary || this.overview?.security; return m ? ((m.critical || 0) + (m.high || 0)) || '' : ''; }
       if (id === 'calendar') return (this.review ? this.review.proposals.filter(p => !p.already_on_calendar).length : this.overview?.calendar_review?.pending?.length) || '';
       return '';
     },
@@ -1803,6 +2008,140 @@ function workspace() {
     },
 
     // ---------- accounts ----------
+    // ---------- security ----------
+    async loadSecurity(withWatchlist = true) {
+      this.loading.security = true;
+      try {
+        const r = await this.api('/api/ws/security?watchlist=' + (withWatchlist ? 'true' : 'false'));
+        if (!withWatchlist && this.security) r.watchlist = this.security.watchlist;
+        this.security = r;
+      } catch (e) { this.toast('No se pudo leer seguridad: ' + e.message, true); }
+      finally { this.loading.security = false; }
+    },
+    async runSecurityScan() {
+      this.securityBusy = true;
+      try {
+        const r = await this.api('/api/ws/security/run', { method: 'POST' });
+        const d = r.details || {};
+        this.toast(`Revisión lista: ${d.new ?? 0} nuevos, ${d.findings ?? 0} abiertos` + ((d.errors || []).length ? ` · ${d.errors.length} avisos` : ''));
+        await this.loadSecurity(false);
+        this.loadOverview();
+      } catch (e) { this.toast('La revisión falló: ' + e.message, true); await this.loadSecurity(false); }
+      finally { this.securityBusy = false; }
+    },
+    async setFindingState(f, state, note = null, refresh = true) {
+      try {
+        const row = await this.api('/api/ws/security/findings/' + encodeURIComponent(f.id), { method: 'POST', body: { state, note } });
+        Object.assign(f, row);
+        // Ignored rows live in their own list so the filters stay consistent.
+        const s = this.security;
+        s.findings = s.findings.filter(r => r.id !== f.id); s.ignored = s.ignored.filter(r => r.id !== f.id);
+        (state === 'ignored' ? s.ignored : s.findings).push(f);
+        if (refresh) s.summary = (await this.api('/api/ws/security?watchlist=false')).summary;
+      } catch (e) { this.toast('No se pudo actualizar: ' + e.message, true); }
+    },
+    async addWatch() {
+      const product = (this.newWatch.product === '__custom' ? this.newWatch.custom : this.newWatch.product || '').trim().toLowerCase();
+      if (!product) return;
+      this.securityBusy = true;
+      try {
+        const where = this.newWatch.where.split(',').map(s => s.trim()).filter(Boolean);
+        this.security = await this.api('/api/ws/security/watchlist', { method: 'POST', body: { product, where } });
+        this.newWatch = { product: '', custom: '', where: '' };
+        this.toast('Ahora vigilamos ' + product);
+      } catch (e) { this.toast(e.message, true); }
+      finally { this.securityBusy = false; }
+    },
+    async removeWatch(w) {
+      if (!confirm(`¿Dejar de vigilar ${w.name}?`)) return;
+      try { this.security = await this.api('/api/ws/security/watchlist/' + encodeURIComponent(w.product), { method: 'DELETE' }); }
+      catch (e) { this.toast(e.message, true); }
+    },
+    async saveSecuritySettings(patch) {
+      try {
+        const r = await this.api('/api/ws/security/settings', { method: 'PUT', body: patch });
+        r.watchlist = this.security?.watchlist || r.watchlist;
+        this.security = r;
+        this.toast('Ajustes guardados');
+      } catch (e) { this.toast('No se pudo guardar: ' + e.message, true); }
+    },
+    securityRows() {
+      const s = this.security; if (!s) return [];
+      const f = this.securityFilter, q = this.securityQuery.trim().toLowerCase();
+      let rows = f === 'ignored' ? s.ignored : s.findings;
+      if (!this.securityDev) rows = rows.filter(r => !r.dev);
+      if (this.securityRepo) rows = rows.filter(r => r.repo === this.securityRepo);
+      if (['critical', 'high', 'medium', 'low'].includes(f)) rows = rows.filter(r => r.severity === f && r.state === 'open');
+      else if (f === 'new') rows = rows.filter(r => this.isToday(r.first_seen));
+      else if (f === 'package' || f === 'product' || f === 'eol') rows = rows.filter(r => r.kind === f);
+      else if (f === 'reviewed') rows = rows.filter(r => r.state === 'reviewed');
+      else if (f === 'all') rows = rows.filter(r => r.state === 'open');
+      if (q) rows = rows.filter(r => [r.component, r.repo, r.title, r.vuln_id, r.version].join(' ').toLowerCase().includes(q));
+      return rows;
+    },
+    securityFindings() {
+      // One row per advisory × package@version; the repos where it appears are merged.
+      const groups = new Map();
+      for (const r of this.securityRows()) {
+        const key = [r.vuln_id || r.id, r.component, r.kind].join('|');
+        let g = groups.get(key);
+        if (!g) { g = { ...r, repos: [], rows: [], versions: [], fixes: [], dev: true }; groups.set(key, g); }
+        if (r.repo && !g.repos.includes(r.repo)) g.repos.push(r.repo);
+        if (r.version && !g.versions.includes(r.version)) g.versions.push(r.version);
+        if (r.fixed_in && !g.fixes.includes(r.fixed_in)) g.fixes.push(r.fixed_in);
+        g.rows.push(r);
+        g.dev = g.dev && !!r.dev;
+        if (r.state === 'open') g.state = 'open';
+      }
+      return [...groups.values()];
+    },
+    securityRepos() {
+      const counts = new Map();
+      for (const r of (this.security?.findings || [])) {
+        if (!r.repo || r.state !== 'open' || (!this.securityDev && r.dev)) continue;
+        const c = counts.get(r.repo) || { repo: r.repo, n: 0, critical: 0, high: 0 };
+        c.n++; if (r.severity === 'critical') c.critical++; if (r.severity === 'high') c.high++;
+        counts.set(r.repo, c);
+      }
+      return [...counts.values()].sort((a, b) => (b.critical - a.critical) || (b.high - a.high) || (b.n - a.n));
+    },
+    async setGroupState(g, state, note = null) {
+      for (const r of g.rows) await this.setFindingState(r, state, note, false);
+      g.state = state; if (note) g.note = note;
+      try { this.security.summary = (await this.api('/api/ws/security?watchlist=false')).summary; } catch (e) {}
+    },
+    ignoreGroup(g) {
+      const note = prompt('¿Por qué se ignora? (opcional)', g.note || '');
+      if (note === null) return;
+      this.setGroupState(g, 'ignored', note || 'ignorado');
+    },
+    securityKpis() {
+      const m = this.security?.summary || {};
+      return [
+        { label: 'Críticos', value: m.critical ?? 0, hint: 'abiertos', tone: m.critical ? 'text-rose-300' : 'text-slate-200', glow: 'bg-rose-500', filter: 'critical' },
+        { label: 'Altos', value: m.high ?? 0, hint: `${m.medium ?? 0} medios · ${m.low ?? 0} bajos`, tone: m.high ? 'text-amber-300' : 'text-slate-200', glow: 'bg-amber-500', filter: 'high' },
+        { label: 'Nuevos hoy', value: m.new_today ?? 0, hint: 'desde la última revisión', tone: m.new_today ? 'text-indigo-200' : 'text-slate-200', glow: 'bg-indigo-500', filter: 'new' },
+        { label: 'Fin de soporte', value: m.eol ?? 0, hint: 'ramas por vencer o vencidas', tone: m.eol ? 'text-amber-300' : 'text-slate-200', glow: 'bg-emerald-500', filter: 'eol' },
+      ];
+    },
+    securityState() {
+      const s = this.security, m = s?.summary || {};
+      if (!s?.enabled) return { label: 'Revisión desactivada', dot: 'bg-slate-500' };
+      if (s.last_run?.status === 'failed') return { label: 'La última revisión falló', dot: 'bg-rose-500' };
+      if (m.critical) return { label: `${m.critical} hallazgo${m.critical > 1 ? 's' : ''} crítico${m.critical > 1 ? 's' : ''} abierto${m.critical > 1 ? 's' : ''}`, dot: 'bg-rose-500' };
+      if (m.high) return { label: `${m.high} hallazgo${m.high > 1 ? 's' : ''} de severidad alta`, dot: 'bg-amber-400' };
+      if (m.open) return { label: `${m.open} hallazgos abiertos, ninguno grave`, dot: 'bg-indigo-400' };
+      return { label: 'Sin hallazgos abiertos', dot: 'bg-emerald-400' };
+    },
+    sevClass(s) { return { critical: 'bg-rose-500/25 text-rose-200', high: 'bg-amber-500/25 text-amber-200', medium: 'bg-yellow-500/15 text-yellow-200', low: 'bg-slate-600/40 text-slate-300' }[s] || 'bg-slate-700/40 text-slate-400'; },
+    sevLabel(s) { return { critical: 'CRÍTICO', high: 'ALTO', medium: 'MEDIO', low: 'BAJO' }[s] || '?'; },
+    eolLabel(c) {
+      if (c.days_left === null || c.days_left === undefined) return c.eol ? 'EOL ' + c.eol : 'sin fecha de fin';
+      if (c.days_left < 0) return 'sin soporte desde ' + c.eol;
+      return `soporte ${c.days_left} d · ${c.eol}`;
+    },
+    isToday(iso) { return (iso || '').slice(0, 10) === new Date().toISOString().slice(0, 10); },
+
     // ---------- status console ----------
     async loadStatus() {
       this.loading.status = true;

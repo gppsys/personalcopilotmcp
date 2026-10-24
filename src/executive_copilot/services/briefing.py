@@ -243,6 +243,14 @@ class BriefingService:
             else:
                 briefing["commitments"] = results[idx]
 
+        # Local counts from the last security scan (no network).
+        try:
+            from executive_copilot.services.security_store import SecurityStore
+
+            briefing["security"] = SecurityStore().summary()
+        except Exception as e:
+            briefing["errors"].append(f"Security: {e}")
+
         briefing["summary"] = self._build_summary(briefing)
         briefing["summary_text"] = self._build_summary_text(briefing["summary"])
 
@@ -742,7 +750,15 @@ class BriefingService:
             "pending_replies": 0,
             "waiting_on_others": 0,
             "my_commitments": 0,
+            "security_critical": 0,
+            "security_high": 0,
+            "security_new": 0,
         }
+
+        if briefing.get("security"):
+            summary["security_critical"] = briefing["security"].get("critical", 0)
+            summary["security_high"] = briefing["security"].get("high", 0)
+            summary["security_new"] = briefing["security"].get("new_today", 0)
 
         if briefing.get("calendar"):
             summary["meetings"] = briefing["calendar"].get("total", 0)
@@ -809,6 +825,12 @@ class BriefingService:
         if summary.get("waiting_on_others", 0) > 0:
             n = summary["waiting_on_others"]
             parts.append(f"{n} {'item' if n == 1 else 'items'} waiting on others")
+
+        sec_grave = summary.get("security_critical", 0) + summary.get("security_high", 0)
+        if sec_grave > 0:
+            parts.append(pluralize(sec_grave, "critical/high security finding", "critical/high security findings"))
+        elif summary.get("security_new", 0) > 0:
+            parts.append(pluralize(summary["security_new"], "new security finding", "new security findings"))
 
         if not parts:
             return "All clear! No urgent items today."

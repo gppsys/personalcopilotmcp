@@ -12,6 +12,7 @@ from executive_copilot.logging import get_logger
 logger = get_logger(__name__)
 
 UI_SETTINGS_FILE = "ui_settings.yaml"
+SECURITY_FILE = "security.yaml"
 
 
 class ConfigLoader:
@@ -164,6 +165,28 @@ def save_ui_settings(config_dir: Path | str, patch: dict[str, Any]) -> dict[str,
         yaml.safe_dump(data, f, sort_keys=True, allow_unicode=True)
     tmp.replace(path)
     return data
+
+
+def load_security_settings(config_dir: Path | str) -> dict[str, Any]:
+    """The ``security:`` section edited from the Seguridad view (config/security.yaml)."""
+    path = Path(config_dir) / SECURITY_FILE
+    if not path.exists():
+        return {}
+    with path.open() as f:
+        data = yaml.safe_load(f)
+    section = data.get("security") if isinstance(data, dict) else None
+    return section if isinstance(section, dict) else {}
+
+
+def save_security_settings(config_dir: Path | str, section: dict[str, Any]) -> dict[str, Any]:
+    """Replace the ``security:`` section of config/security.yaml (merged like any config file)."""
+    path = Path(config_dir) / SECURITY_FILE
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("w") as f:
+        f.write("# Security watchlist. Edited from the Seguridad view of the web workspace.\n")
+        yaml.safe_dump({"security": section}, f, sort_keys=False, allow_unicode=True)
+    tmp.replace(path)
+    return section
 
 
 def load_config(config_dir: Path | str | None = None) -> AppConfig:

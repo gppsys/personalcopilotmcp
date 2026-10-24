@@ -101,3 +101,10 @@ automation_jobs:
   enabled: false
   schedule: '*/5 * * * *'
   settings: {}
+
+- job_name: security_scan
+  job_type: security_scan
+  enabled: true
+  schedule: 45 6 * * 1-5      # before the daily briefing
+  settings:
+    use_ai: true

@@ -3965,6 +3965,43 @@ Keep it concise and actionable. Focus on what's most important for this specific
         return build_index(config)
 
     @mcp.tool()
+    async def security_overview(severity: str | None = None, limit: int = 25) -> dict[str, Any]:
+        """Open security findings for the stack from the daily scan (OSV, NVD, endoflife.date).
+
+        Compact: counts by severity plus the worst open findings (package or
+        product, version, fix version, repo, advisory id). Use it to answer
+        "¿qué tengo pendiente de seguridad?"; the Seguridad view of the
+        workspace holds the full list and the review actions.
+
+        Args:
+            severity: Only this severity (critical, high, medium, low)
+            limit: Max findings returned (default 25)
+        """
+        from executive_copilot.services.security_store import SecurityStore
+
+        store = SecurityStore()
+        rows = store.findings(states=("open",), limit=200)
+        if severity:
+            rows = [r for r in rows if r["severity"] == severity.lower()]
+        return {
+            "summary": store.summary(),
+            "findings": [
+                {
+                    "severity": r["severity"],
+                    "component": r["component"],
+                    "version": r.get("version"),
+                    "fixed_in": r.get("fixed_in"),
+                    "repo": r.get("repo"),
+                    "id": r.get("vuln_id"),
+                    "title": (r.get("title") or "")[:140],
+                    "kind": r["kind"],
+                    "first_seen": (r.get("first_seen") or "")[:10],
+                }
+                for r in rows[: max(1, min(limit, 100))]
+            ],
+        }
+
+    @mcp.tool()
     async def vault_overview(folder: str | None = None) -> dict[str, Any]:
         """Map of the Obsidian vault: folders, note counts and recent notes.
 

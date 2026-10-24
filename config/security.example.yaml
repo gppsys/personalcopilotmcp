@@ -1,0 +1,20 @@
+# Copy to config/security.yaml (gitignored). The Seguridad view edits this file.
+security:
+  enabled: true
+  cycles: 2              # release lines watched per product, newest first
+  lookback_days: 120     # NVD advisories published in this window
+  eol_warning_days: 180  # warn before a release line stops receiving fixes
+  scan_repos: true       # read package-lock.json / composer.lock of the GitHub repos
+  use_ai: true           # one short note prioritizing the day's new findings
+  watchlist:
+    - product: php
+      where: [api]
+    - product: nodejs
+    - product: apache-http-server
+    - product: mariadb
+    - product: postgresql
+    - product: laravel
+  ignore:
+    # - id: CVE-2024-00000
+    #   reason: módulo no habilitado
+    #   until: 2026-12-31
