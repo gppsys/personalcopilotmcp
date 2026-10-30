@@ -192,7 +192,8 @@ class PendingRepliesService:
 
         resolved = 0
         for follow_up in candidates:
-            external_id = follow_up.detected_from[1:].split("]", 1)[0].strip()
+            detected_from = follow_up.detected_from or ""
+            external_id = detected_from[1:].split("]", 1)[0].strip()
             if not external_id:
                 continue
 

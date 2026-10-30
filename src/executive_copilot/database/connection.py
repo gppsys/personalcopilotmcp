@@ -126,7 +126,7 @@ class DatabaseManager:
         which are safe on both SQLite and PostgreSQL. Column removals or
         type changes still require a manual migration.
         """
-        from sqlalchemy import inspect, text
+        from sqlalchemy import ColumnDefault, inspect, text
 
         from executive_copilot.database import tables
 
@@ -144,7 +144,7 @@ class DatabaseManager:
                     f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" '
                     f"{column.type.compile(conn.dialect)}"
                 )
-                if column.default is not None and column.default.is_scalar:
+                if isinstance(column.default, ColumnDefault) and column.default.is_scalar:
                     ddl += f" DEFAULT {column.default.arg!r}"
                 conn.execute(text(ddl))
                 logger.info(
