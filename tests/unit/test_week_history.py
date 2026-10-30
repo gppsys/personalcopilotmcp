@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime
 
+import pytest
+
 from executive_copilot.services import week_history
 
 
@@ -97,6 +99,10 @@ class TestRenderDashboardHtml:
         html = week_history.render_dashboard_html()
         assert "const SERVER_HISTORY = {};" in html
 
+    @pytest.mark.skipif(
+        not week_history._DASHBOARD_PATH.exists(),
+        reason="tech_dashboard.html is local-only (gitignored)",
+    )
     def test_real_dashboard_has_placeholder(self):
         html = week_history._DASHBOARD_PATH.read_text()
         assert week_history._HISTORY_PLACEHOLDER in html
