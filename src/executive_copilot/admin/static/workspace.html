@@ -366,14 +366,50 @@
             <div class="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 p-0.5">
               <button @click="setFolder('meetings')" class="px-3 py-1.5 rounded-md text-sm" :class="folder === 'meetings' ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900' : 'text-slate-600 dark:text-slate-300'">Reuniones</button>
               <button @click="setFolder('people')" class="px-3 py-1.5 rounded-md text-sm" :class="folder === 'people' ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900' : 'text-slate-600 dark:text-slate-300'">Personas</button>
+              <button @click="setFolder('documents')" class="px-3 py-1.5 rounded-md text-sm" :class="folder === 'documents' ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900' : 'text-slate-600 dark:text-slate-300'">Documentos</button>
             </div>
             <form @submit.prevent="searchNotes()" class="flex-1 min-w-[14rem] flex gap-2">
               <input x-model="noteQuery" placeholder="Buscar decisiones, temas, personas…" class="flex-1 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm">
               <button class="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm hover:bg-slate-100 dark:hover:bg-slate-800">Buscar</button>
             </form>
+            <button @click="toggleDocs()" class="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2">
+              <span class="w-4 h-4" x-html="icons.note"></span> Importar PDF
+            </button>
             <button @click="syncOpen = !syncOpen" class="px-3 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium flex items-center gap-2">
               <span class="w-4 h-4" x-html="icons.sync"></span> Sincronizar Gemini
             </button>
+          </div>
+
+          <!-- PDF import panel -->
+          <div x-show="docsOpen" x-cloak class="mb-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4">
+            <label @dragover.prevent="docsDrag = true" @dragleave.prevent="docsDrag = false" @drop.prevent="docsDrag = false; importPdfs($event.dataTransfer.files)"
+              class="block cursor-pointer rounded-xl border-2 border-dashed px-4 py-6 text-center text-sm"
+              :class="docsDrag ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10' : 'border-slate-300 dark:border-slate-600 hover:border-indigo-400'">
+              <input type="file" accept="application/pdf,.pdf" multiple class="hidden" @change="importPdfs($event.target.files); $event.target.value = ''">
+              <span x-show="!loading.docs">Arrastra PDFs aquí o <span class="text-indigo-600 dark:text-indigo-400 underline">elige archivos</span></span>
+              <span x-show="loading.docs" x-cloak>Convirtiendo a Markdown…</span>
+            </label>
+            <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+              <span>Se guardan como notas en <span class="font-mono text-slate-700 dark:text-slate-300" x-text="docsStatus?.folder || '…'"></span> · conversión local, sin enviar el archivo a ningún servicio · máx. <span x-text="docsStatus?.max_mb || 40"></span> MB</span>
+              <span x-show="docsStatus && !docsStatus.searchable" x-cloak class="text-amber-600 dark:text-amber-400">Esta carpeta no está en index_folders: el asistente no la buscará.</span>
+              <button x-show="docsStatus?.pending_pdfs?.length" x-cloak @click="scanDocs()" :disabled="loading.docs" class="ml-auto px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                x-text="'Convertir ' + (docsStatus?.pending_pdfs?.length || 0) + ' PDF de la carpeta'"></button>
+            </div>
+            <div x-show="docResults.length" x-cloak class="mt-3 space-y-1 text-sm">
+              <template x-for="(r, i) in docResults" :key="i">
+                <div class="flex flex-wrap items-baseline gap-x-2">
+                  <span class="font-medium break-all" x-text="r.file"></span>
+                  <template x-if="r.error"><span class="text-rose-600 dark:text-rose-400" x-text="r.error"></span></template>
+                  <template x-if="!r.error">
+                    <span class="text-slate-600 dark:text-slate-300">
+                      <span x-text="r.status === 'unchanged' ? 'ya estaba importado →' : '→'"></span>
+                      <button @click="openNote(r.note, 'documents')" class="text-indigo-600 dark:text-indigo-400 hover:underline" x-text="r.note"></button>
+                      <span class="text-xs text-slate-500" x-show="r.pages" x-text="'· ' + r.pages + ' pág.' + (r.tables ? ' · ' + r.tables + ' tablas' : '')"></span>
+                    </span>
+                  </template>
+                </div>
+              </template>
+            </div>
           </div>
 
           <!-- Sync panel -->
@@ -1350,7 +1386,7 @@ function workspace() {
     view: 'today',
     dark: document.documentElement.classList.contains('dark'),
     chatOpen: window.innerWidth >= 1280,
-    loading: { today: false, tasks: false, calendar: false, week: false, notes: false, sync: false, map: false, accounts: false, testAll: false, status: false, checks: false, security: false },
+    loading: { today: false, tasks: false, calendar: false, week: false, notes: false, sync: false, docs: false, map: false, accounts: false, testAll: false, status: false, checks: false, security: false },
     busy: { task: false, event: false, note: false, cal: false }, toasts: [],
     overview: null, tasks: null, taskTab: 'asana', taskFilter: '',
     taskTabs: [
@@ -1361,6 +1397,7 @@ function workspace() {
     newTask: { title: '', due_date: '', notes: '' },
     review: null, reviewDays: 7, week: null,
     newEvent: { title: '', start: '', end: '', location: '', private: false },
+    docsOpen: false, docsDrag: false, docsStatus: null, docResults: [],
     folder: 'meetings', notes: [], note: null, editing: false, draft: '', noteQuery: '', noteResults: null,
     peopleNames: [], syncOpen: false, syncDays: 7, syncResult: null, syncPreview: false,
     messages: [], input: '', thinking: false, models: [], chatModel: store('ws-model') || '',
@@ -1793,6 +1830,42 @@ function workspace() {
         this.toast('Nota guardada en Obsidian');
       } catch (e) { this.toast(e.message, true); }
       finally { this.busy.note = false; }
+    },
+    async loadDocsStatus() {
+      try { this.docsStatus = await this.api('/api/ws/documents'); }
+      catch (e) { this.docsStatus = null; this.toast(e.message, true); }
+    },
+    toggleDocs() { this.docsOpen = !this.docsOpen; if (this.docsOpen) this.loadDocsStatus(); },
+    async importPdfs(fileList) {
+      const files = [...(fileList || [])];
+      if (!files.length || this.loading.docs) return;
+      this.loading.docs = true; this.docResults = [];
+      for (const f of files) {
+        try {
+          // Raw body, not JSON: the PDF goes as-is and is converted in the container.
+          const res = await fetch(`/api/ws/documents/import?filename=${encodeURIComponent(f.name)}`, { method: 'POST', headers: { 'Content-Type': 'application/pdf' }, body: f });
+          let data = null;
+          try { data = await res.json(); } catch (e) {}
+          if (!res.ok) throw new Error((data && data.detail) || res.statusText);
+          this.docResults.push({ file: f.name, ...data });
+        } catch (e) { this.docResults.push({ file: f.name, error: e.message }); }
+      }
+      this.loading.docs = false;
+      this.afterDocsImport(this.docResults.filter(r => r.status === 'written').length);
+    },
+    async scanDocs() {
+      this.loading.docs = true;
+      try {
+        const r = await this.api('/api/ws/documents/scan', { method: 'POST' });
+        this.docResults = [...r.imported.map(d => ({ file: d.note + '.pdf', status: 'written', ...d })), ...r.errors];
+        this.afterDocsImport(r.imported.length);
+      } catch (e) { this.toast(e.message, true); }
+      finally { this.loading.docs = false; }
+    },
+    afterDocsImport(written) {
+      this.loadDocsStatus();
+      if (written) this.toast(written + (written === 1 ? ' documento importado' : ' documentos importados') + ' a Obsidian');
+      if (this.folder === 'documents') this.loadNotes(); else if (written) this.setFolder('documents');
     },
     async syncNotes(dryRun) {
       this.loading.sync = true; this.syncResult = null;

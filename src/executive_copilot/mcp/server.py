@@ -3965,6 +3965,32 @@ Keep it concise and actionable. Focus on what's most important for this specific
         return build_index(config)
 
     @mcp.tool()
+    async def import_pdf_to_vault(
+        source: str, title: str | None = None, overwrite: bool = False, dry_run: bool = False
+    ) -> dict[str, Any]:
+        """Convert a PDF to a Markdown note in the vault's documents folder (searchable context).
+
+        Local conversion (headings, lists, tables; no OCR, so scanned PDFs are
+        rejected). The note is then found by search_vault and read with
+        read_vault_note. Importing the same PDF again is a no-op. Returns only
+        metadata, never the document text.
+
+        Args:
+            source: http(s) URL of a PDF, or a PDF path inside the vault (vault-relative)
+            title: Note title (default: the PDF's title, else its file name)
+            overwrite: Replace the note if this PDF was already imported
+            dry_run: Convert and return a short preview without writing
+        """
+        from executive_copilot.services.pdf_markdown import DocumentImportService
+
+        try:
+            return dict(await DocumentImportService(config).import_source(
+                source, title=title, overwrite=overwrite, dry_run=dry_run
+            ))
+        except ValueError as e:
+            return {"error": str(e)}
+
+    @mcp.tool()
     async def security_overview(severity: str | None = None, limit: int = 25) -> dict[str, Any]:
         """Open security findings for the stack from the daily scan (OSV, NVD, endoflife.date).
 

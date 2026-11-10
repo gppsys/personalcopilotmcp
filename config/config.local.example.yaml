@@ -48,5 +48,6 @@ obsidian:
   people_folder: Work/People
   series_map: {}                   # regex on meeting title -> note name
   skip_titles: []                  # regexes of meetings never synced
+  documents_folder: Work/Documents # imported PDFs land here as Markdown notes (null disables)
   index_folders: [Work]            # folders the assistant can search (default: top folder of meetings_folder)
   index_exclude: []                # globs never indexed, e.g. ["Work/Private/*"]

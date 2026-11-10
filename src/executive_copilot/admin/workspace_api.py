@@ -6,7 +6,7 @@ import time
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from executive_copilot.logging import get_logger
@@ -316,6 +316,54 @@ def create_workspace_router(config_dir: Path, credential_manager: CredentialMana
     @router.post("/notes/sync")
     async def sync_notes(payload: SyncInput) -> dict[str, Any]:
         return await ws().notes_service(with_ai=True).sync(days_back=payload.days_back, dry_run=payload.dry_run)
+
+    # --- documents (PDF -> Markdown notes) -----------------------------------
+
+    def documents() -> Any:
+        from executive_copilot.services.pdf_markdown import DocumentImportService
+
+        return DocumentImportService(ws().config)
+
+    @router.get("/documents")
+    async def documents_status() -> dict[str, Any]:
+        import asyncio
+
+        try:
+            return await asyncio.to_thread(documents().status)
+        except ValueError as e:
+            raise bad_request(e) from e
+
+    @router.post("/documents/import")
+    async def import_document(
+        request: Request,
+        filename: str = "documento.pdf",
+        title: str | None = None,
+        overwrite: bool = False,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """The PDF is the raw request body (no multipart), converted locally."""
+        import asyncio
+
+        try:
+            service = documents()
+            declared = int(request.headers.get("content-length") or 0)
+            if declared > service.max_bytes:
+                raise ValueError(f"PDF larger than {service.max_bytes // (1024 * 1024)} MB")
+            data = await request.body()
+            return await asyncio.to_thread(
+                service.import_pdf, data, filename, title=title, overwrite=overwrite, dry_run=dry_run
+            )
+        except ValueError as e:
+            raise bad_request(e) from e
+
+    @router.post("/documents/scan")
+    async def scan_documents() -> dict[str, Any]:
+        import asyncio
+
+        try:
+            return await asyncio.to_thread(documents().import_pending)
+        except ValueError as e:
+            raise bad_request(e) from e
 
     # --- accounts & credentials --------------------------------------------
 

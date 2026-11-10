@@ -41,6 +41,7 @@ dependencies = [
     "openai>=2.0.0",
     "numpy>=2.5.3",
     "asyncmy>=0.2.16",
+    "pdfplumber>=0.11.4",
 ]
 
 [project.optional-dependencies]

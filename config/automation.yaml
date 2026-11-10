@@ -89,6 +89,12 @@ automation_jobs:
     catch_up: true      # widen the window back to the newest meeting already in the vault
     max_days_back: 60
     use_ai: true
+- job_name: documents_import
+  job_type: documents_import
+  enabled: true
+  schedule: '*/30 * * * *'    # PDFs dropped into obsidian.documents_folder become notes
+  settings: {}
+
 - job_name: github_docs_sync
   job_type: github_docs_sync
   enabled: true

@@ -378,6 +378,12 @@ class WorkspaceService:
             people = MeetingNotesVault(meetings.vault_path, self.config.obsidian.people_folder, None, coordination_dir=meetings.coordination_dir)
             if people.meetings_dir.exists():
                 return people
+        documents = getattr(self.config.obsidian, "documents_folder", None)
+        if folder == "documents" and documents:
+            docs = MeetingNotesVault(meetings.vault_path, documents, None, coordination_dir=meetings.coordination_dir)
+            # Created on first import: an empty list beats an error before that.
+            docs.meetings_dir.mkdir(parents=True, exist_ok=True)
+            return docs
         raise ValueError(f"Unknown or missing folder: {folder}")
 
     # --- overview -------------------------------------------------------------

@@ -312,6 +312,17 @@ class ObsidianConfig(BaseModel):
         default=False,
         description="Also make transcripts searchable by the assistant (long notes; off keeps searches cheap)",
     )
+    documents_folder: str | None = Field(
+        default="Paycode/Documentos",
+        description=(
+            "Vault-relative folder where imported PDFs land as Markdown notes "
+            "(keep it under index_folders so they are searchable; null disables the import)"
+        ),
+    )
+    document_tags: list[str] = Field(
+        default_factory=lambda: ["documento"], description="Tags every imported document carries"
+    )
+    documents_max_mb: int = Field(default=40, ge=1, description="Largest PDF accepted by the import")
     index_folders: list[str] = Field(
         default_factory=list,
         description="Vault folders searchable by the assistant (default: top folder of meetings_folder)",

@@ -416,6 +416,34 @@ class ObsidianMeetingSyncJob(Job):
         )
 
 
+class DocumentsImportJob(Job):
+    """Convert PDFs dropped into the vault's documents folder to Markdown notes."""
+
+    async def execute(self) -> JobResult:
+        """Import every PDF in the documents folder that has no note yet."""
+        import asyncio
+
+        from executive_copilot.services.pdf_markdown import DocumentImportService
+
+        started_at = datetime.utcnow()
+        service = DocumentImportService(self._container.config)
+        try:
+            result = await asyncio.to_thread(service.import_pending)
+        except ValueError as e:
+            return JobResult(job_name=self.name, status=JobStatus.FAILED, started_at=started_at,
+                             error_message=str(e))
+        imported, errors = result["imported"], result["errors"]
+        return JobResult(
+            job_name=self.name,
+            # Every pending PDF failing is a failure; one bad file among good ones is not.
+            status=JobStatus.FAILED if errors and not imported else JobStatus.COMPLETED,
+            started_at=started_at,
+            items_processed=len(imported),
+            error_message="; ".join(f"{e['file']}: {e['error']}" for e in errors)[:500] if errors and not imported else None,
+            details={**result, "imported": [d["note"] for d in imported]},
+        )
+
+
 class GitHubDocsSyncJob(Job):
     """Mirror GitHub repository docs and index them with the vault."""
 
@@ -693,6 +721,7 @@ JOB_TYPES: dict[str, type[Job]] = {
     "delegation_detection": DelegationDetectionJob,
     "email_forward": EmailForwardJob,
     "obsidian_meeting_sync": ObsidianMeetingSyncJob,
+    "documents_import": DocumentsImportJob,
     "github_docs_sync": GitHubDocsSyncJob,
     "knowledge_sync": KnowledgeSyncJob,
     "security_scan": SecurityScanJob,
