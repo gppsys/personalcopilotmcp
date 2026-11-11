@@ -114,3 +114,11 @@ automation_jobs:
   schedule: 45 6 * * 1-5      # before the daily briefing
   settings:
     use_ai: true
+
+- job_name: obsidian_backup
+  job_type: obsidian_backup
+  enabled: true
+  schedule: 0 22 * * *        # daily: mirror the vault to a private GitHub repo
+  settings:
+    repo: gppsys/obsidian     # token: Cuentas, code/github, account = repo owner
+    mirror_dir: obsidian_backup

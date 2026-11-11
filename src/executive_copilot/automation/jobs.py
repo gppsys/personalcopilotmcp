@@ -488,6 +488,48 @@ class GitHubDocsSyncJob(Job):
         )
 
 
+class ObsidianBackupJob(Job):
+    """Push a mirror of the Obsidian vault to a private Git repository."""
+
+    async def execute(self) -> JobResult:
+        """Mirror, commit and push the vault."""
+        import asyncio
+        from pathlib import Path
+
+        from executive_copilot.services.obsidian_backup import BackupError, ObsidianBackup
+
+        started_at = datetime.utcnow()
+        config = self._container.config
+        repo = self._settings.get("repo")
+        vault = config.obsidian.vault_path
+        if not repo or not vault:
+            return JobResult(job_name=self.name, status=JobStatus.FAILED, started_at=started_at,
+                             error_message="Set settings.repo (owner/name) and the Obsidian vault path")
+
+        account = self._settings.get("account") or repo.split("/")[0]
+        cred = self._container.credential_manager.get_credential("code", "github", account) or {}
+        token = cred.get("access_token")
+        if not token:
+            return JobResult(job_name=self.name, status=JobStatus.FAILED, started_at=started_at,
+                             error_message=f"No GitHub token for account '{account}' (Cuentas, code/github)")
+
+        backup = ObsidianBackup(
+            vault=Path(vault),
+            mirror_dir=Path(self._settings.get("mirror_dir", "obsidian_backup")),
+            remote=f"https://github.com/{repo}.git",
+            token=str(token),
+            exclude=self._settings.get("exclude"),
+            author=account,
+        )
+        try:
+            stats = await asyncio.to_thread(backup.run)
+        except BackupError as e:
+            return JobResult(job_name=self.name, status=JobStatus.FAILED, started_at=started_at,
+                             error_message=str(e))
+        return JobResult(job_name=self.name, status=JobStatus.COMPLETED, started_at=started_at,
+                         items_processed=stats["changed"], details=stats)
+
+
 class CommitmentDetectionJob(Job):
     """Job for detecting commitments from emails and transcripts."""
 
@@ -725,4 +767,5 @@ JOB_TYPES: dict[str, type[Job]] = {
     "github_docs_sync": GitHubDocsSyncJob,
     "knowledge_sync": KnowledgeSyncJob,
     "security_scan": SecurityScanJob,
+    "obsidian_backup": ObsidianBackupJob,
 }

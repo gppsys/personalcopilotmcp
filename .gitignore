@@ -137,3 +137,6 @@ scripts/*.local.yaml
 
 # Durable personal knowledge operation lock and working state
 knowledge_state/
+
+# Obsidian vault backup working copy (job obsidian_backup)
+obsidian_backup/
