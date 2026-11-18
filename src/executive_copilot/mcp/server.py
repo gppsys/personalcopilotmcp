@@ -4375,6 +4375,10 @@ Keep it concise and actionable. Focus on what's most important for this specific
     from executive_copilot.mcp.knowledge import register_knowledge_tools
 
     register_knowledge_tools(mcp, config, credential_manager)
+
+    from executive_copilot.mcp.wiki import register_wiki_tools
+
+    register_wiki_tools(mcp, config, credential_manager)
     logger.info("MCP server configured with multi-account aggregation tools")
     return mcp
 

@@ -33,8 +33,9 @@ TOKEN_SERVICES: dict[str, tuple[str, str, str]] = {
     "slack": ("communication", "slack", "access_token"),
     "openai": ("ai", "openai", "api_key"),
     "github": ("code", "github", "access_token"),
+    "bookstack": ("wiki", "bookstack", "access_token"),
 }
-TOKEN_LABEL = {"asana": "Asana", "slack": "Slack", "openai": "OpenAI (IA del servidor)", "github": "GitHub"}
+TOKEN_LABEL = {"asana": "Asana", "slack": "Slack", "openai": "OpenAI (IA del servidor)", "github": "GitHub", "bookstack": "Wiki (BookStack)"}
 
 
 class AccountsService:
@@ -181,6 +182,14 @@ class AccountsService:
             for org in self.config.github_docs.orgs[:1]:
                 detail += f" · {len(await github.list_repos(org))} repos en {org}"
             return detail
+        if kind == "bookstack":
+            from executive_copilot.providers.wiki import BookStackProvider
+
+            wiki = self.config.wiki
+            if not wiki.base_url:
+                raise ValueError("Falta wiki.base_url en la configuración")
+            total = await BookStackProvider(self.cm, wiki.base_url, account).count_books()
+            return f"Wiki OK · {total} libros visibles"
         raise ValueError(f"Tipo desconocido: {kind}")
 
     # --- changes ------------------------------------------------------------

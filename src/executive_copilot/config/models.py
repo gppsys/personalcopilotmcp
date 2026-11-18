@@ -350,6 +350,20 @@ class KnowledgeConfig(BaseModel):
     max_file_bytes: int = Field(default=1_000_000, ge=1, le=10_000_000)
 
 
+class WikiConfig(BaseModel):
+    """Company wiki (BookStack), read live through its REST API.
+
+    The API token is stored in Cuentas (kind "bookstack") as
+    ``token_id:token_secret``; what it can see is whatever its user can.
+    """
+
+    enabled: bool = Field(default=False, description="Expose the wiki tools")
+    base_url: str = Field(default="", description="Wiki address, e.g. https://wiki.example.com")
+    account: str = Field(default="default", description="Credential account holding the API token")
+    allow_comments: bool = Field(default=False, description="Let assistants post comments on pages")
+    max_chars: int = Field(default=6000, ge=500, le=40000, description="Default size cap of a page read")
+
+
 class GitHubDocsConfig(BaseModel):
     """Markdown docs of GitHub repositories, mirrored locally and searchable with the vault.
 
@@ -506,6 +520,7 @@ class AppConfig(BaseSettings):
     # Workspace integrations
     obsidian: ObsidianConfig = Field(default_factory=ObsidianConfig)
     github_docs: GitHubDocsConfig = Field(default_factory=GitHubDocsConfig)
+    wiki: WikiConfig = Field(default_factory=WikiConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     calendar_defaults: CalendarDefaultsConfig = Field(default_factory=CalendarDefaultsConfig)
     email_calendar: EmailCalendarConfig = Field(default_factory=EmailCalendarConfig)

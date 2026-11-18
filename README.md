@@ -12,6 +12,7 @@ An MCP (Model Context Protocol) server that provides AI assistants with access t
 - **Follow-up Detection**: Automatically tracks sent emails awaiting replies
 - **Transcript Scanning**: Extracts action items from meeting transcripts (Google Meet)
 - **Obsidian Meeting Notes**: Writes Gemini meeting notes into your vault as dated sections per meeting series (the verbatim transcript goes to a linked note of its own), and lets the assistant search them
+- **Company Wiki (BookStack)**: Lets the assistant browse, search and read your BookStack wiki live through its API, and optionally comment on pages
 - **E-mail to Calendar**: Finds e-mails that need a calendar entry (invites, appointments, school events, reservations) and adds the ones you approve to your default calendar
 
 ## Quick Start
@@ -98,6 +99,7 @@ Add to your Claude Desktop configuration:
 | `recall_memory` | Search knowledge base |
 | `sync_meeting_notes_to_obsidian` | Write recent Gemini meeting notes into the Obsidian vault (dry run available) |
 | `vault_overview` / `search_vault` / `read_vault_note` / `get_person_context` | Search-then-read access to the Obsidian vault through a local index (SQLite FTS5 + OpenAI embeddings, fused by rank): searches return short snippets, reads can target one section. Credential-looking values are redacted before indexing; `obsidian.index_exclude` keeps whole notes out. Evaluate on your own questions with `scripts/eval_vault_search.py` |
+| `wiki_overview` / `wiki_search` / `wiki_read_page` / `wiki_comment` | Live access to a BookStack wiki: list books and their pages, search with the wiki's own syntax, read a page as Markdown (one section at a time for long pages) with its comments. Set `wiki.enabled` and `wiki.base_url` in `config.local.yaml` and save the API token (Token ID + Token Secret) in Cuentas; the assistant sees what that wiki user sees. `wiki_comment` posts as that user and stays off unless `wiki.allow_comments: true` |
 | `edit_vault_note` | Surgical note edits (tick a checkbox, append to or replace within a section) with a backup and a diff |
 | `review_email_calendar_requests` | Propose calendar entries found in e-mail (nothing is created) |
 | `add_email_to_calendar` / `dismiss_email_calendar_request` | Accept or dismiss a proposal |
