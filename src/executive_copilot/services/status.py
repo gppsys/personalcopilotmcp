@@ -376,6 +376,8 @@ class StatusService:
 
         if self.config.github_docs.enabled:
             items.append(self._github_docs(now))
+        if backup := self._vault_backup(now):
+            items.append(backup)
 
         for key, label, path in (
             ("db", "Base de datos", Path(self.config.database.name)),
@@ -412,6 +414,52 @@ class StatusService:
             "detail": detail,
             "updated_at": info["last_sync"],
             "metrics": {"Repositorios": info["repos"], "Documentos": info["files"], "Resúmenes IA": info["summaries"]},
+        }
+
+    def _vault_backup(self, now: datetime) -> dict[str, Any] | None:
+        """Last push and last change of the obsidian_backup job (no git calls)."""
+        from executive_copilot.automation.run_log import get_run_log
+
+        cfg = next((j for j in self.config.automation_jobs if j.job_type == "obsidian_backup"), None)
+        if cfg is None or not cfg.enabled:
+            return None
+        repo = cfg.settings.get("repo") or "?"
+        mirror = _PROJECT_ROOT / cfg.settings.get("mirror_dir", "obsidian_backup")
+
+        last_commit: datetime | None = None
+        try:
+            lines = (mirror / ".git" / "logs" / "HEAD").read_text().splitlines()
+            # "<old> <new> name <email> <epoch> <tz>\t<message>"
+            meta = lines[-1].partition("\t")[0]
+            last_commit = datetime.fromtimestamp(int(meta.split()[-2]), UTC)
+        except (OSError, IndexError, ValueError):
+            pass
+
+        runs = get_run_log().recent(cfg.job_name, limit=20)
+        last = runs[0] if runs else None
+        last_ok = next((r for r in runs if r["status"] == "completed"), None)
+        pushed_at = _parse(last_ok["completed_at"] or last_ok["started_at"]) if last_ok else None
+        if last is None and last_commit is None:
+            health, detail = PENDING, "Aún no se respalda"
+        elif last and last["status"] == "failed":
+            health, detail = DOWN, f"Falló el último respaldo: {(last['error_message'] or '')[:160]}"
+        elif pushed_at is None or now - pushed_at > timedelta(days=2):
+            days = (now - pushed_at).days if pushed_at else None
+            health, detail = WARN, f"Sin respaldar desde hace {days} días" if days else "Sin respaldos exitosos"
+        else:
+            health, detail = OK, f"{repo} · al día"
+        files = (last_ok or {}).get("details", {}).get("files") if last_ok else None
+        return {
+            "key": "vault_backup",
+            "name": "Respaldo de la bóveda",
+            "health": health,
+            "detail": detail,
+            "updated_at": _iso(pushed_at),
+            "metrics": {
+                "Repositorio": repo,
+                "Último cambio": last_commit.astimezone(self.tz).strftime("%Y-%m-%d %H:%M") if last_commit else None,
+                "Archivos": files,
+            },
         }
 
     # --- MCP --------------------------------------------------------------------

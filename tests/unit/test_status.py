@@ -105,3 +105,34 @@ def test_run_errors_accepts_list_or_count() -> None:
     assert _run_errors({"details": {"errors": 0}}) == []
     assert _run_errors({"details": {"errors": 3}}) == ["3 error(es)"]
     assert _run_errors({"details": None}) == []
+
+
+def test_vault_backup_card(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from executive_copilot.services import status as status_mod
+
+    log = JobRunLog(tmp_path / "runs.db")
+    monkeypatch.setattr(run_log, "get_run_log", lambda: log)
+    monkeypatch.setattr(status_mod, "_PROJECT_ROOT", tmp_path)
+    job = SimpleNamespace(job_name="obsidian_backup", job_type="obsidian_backup", enabled=True,
+                          settings={"repo": "me/vault", "mirror_dir": "mirror"})
+    config = SimpleNamespace(automation_jobs=[job], calendar_defaults=SimpleNamespace(timezone="UTC"))
+    service = StatusService(config, credential_manager=None)  # type: ignore[arg-type]
+    now = status_mod._now()
+
+    assert service._vault_backup(now)["health"] == PENDING  # type: ignore[index]
+
+    (tmp_path / "mirror" / ".git" / "logs").mkdir(parents=True)
+    (tmp_path / "mirror" / ".git" / "logs" / "HEAD").write_text(
+        "0000 1111 me <me@x> 1794436929 -0600\tcommit (initial): Backup\n")
+    log.record(_result("obsidian_backup", JobStatus.COMPLETED, 5, details={"files": 637}))
+    card = service._vault_backup(now)
+    assert card is not None and card["health"] == OK
+    assert card["metrics"]["Archivos"] == 637 and card["metrics"]["Último cambio"]
+
+    log.record(_result("obsidian_backup", JobStatus.FAILED, 1, error_message="git push failed"))
+    assert "git push failed" in service._vault_backup(now)["detail"]  # type: ignore[index]
+
+    job.enabled = False
+    assert service._vault_backup(now) is None
