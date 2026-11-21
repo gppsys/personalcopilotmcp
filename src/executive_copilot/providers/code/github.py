@@ -49,6 +49,31 @@ class TreeEntry:
     size: int
 
 
+@dataclass(frozen=True)
+class PullInfo:
+    """A pull request (open or merged)."""
+
+    number: int
+    title: str
+    author: str
+    created_at: datetime
+    merged_at: datetime | None
+    draft: bool
+    url: str
+
+
+@dataclass(frozen=True)
+class WorkflowRunInfo:
+    """One run of a GitHub Actions workflow."""
+
+    started_at: datetime
+    conclusion: str | None
+    actor: str
+    branch: str | None
+    title: str
+    url: str
+
+
 class GitHubProvider:
     """GitHub REST client authenticated with a (fine-grained) personal access token."""
 
@@ -133,6 +158,71 @@ class GitHubProvider:
             data = response.json()
         raw = base64.b64decode(data.get("content") or "") if data.get("encoding") == "base64" else (data.get("content") or "").encode()
         return raw.decode("utf-8", errors="replace")
+
+    async def list_merged_pulls(self, repo: str, base: str | None, since: datetime) -> list[PullInfo]:
+        """Pull requests merged since ``since`` (optionally only into ``base``), newest first."""
+        merged: list[PullInfo] = []
+        params: dict[str, Any] = {"state": "closed", "sort": "updated", "direction": "desc", "per_page": 100}
+        if base:
+            params["base"] = base
+        async with self._client() as client:
+            for page in range(1, 6):
+                response = await client.get(f"/repos/{repo}/pulls", params={**params, "page": page})
+                response.raise_for_status()
+                batch = response.json()
+                merged.extend(
+                    pull for pull in map(_pull, batch) if pull.merged_at is not None and pull.merged_at >= since
+                )
+                # Sorted by update time: once a whole page is older than the window, stop.
+                if len(batch) < 100 or all(_when(item["updated_at"]) < since for item in batch):
+                    break
+        return sorted(merged, key=lambda p: p.merged_at or since, reverse=True)
+
+    async def list_open_pulls(self, repo: str) -> list[PullInfo]:
+        async with self._client() as client:
+            response = await client.get(
+                f"/repos/{repo}/pulls", params={"state": "open", "sort": "created", "direction": "desc", "per_page": 100}
+            )
+            response.raise_for_status()
+            return [_pull(item) for item in response.json()]
+
+    async def list_workflow_runs(self, repo: str, workflow: str, since: datetime) -> list[WorkflowRunInfo]:
+        """Runs of one workflow file created since ``since``, newest first."""
+        async with self._client() as client:
+            response = await client.get(
+                f"/repos/{repo}/actions/workflows/{workflow}/runs",
+                params={"created": f">={since.strftime('%Y-%m-%dT%H:%M:%SZ')}", "per_page": 100},
+            )
+            response.raise_for_status()
+            runs = response.json().get("workflow_runs", [])
+        return [
+            WorkflowRunInfo(
+                started_at=_when(run.get("run_started_at") or run["created_at"]),
+                conclusion=run.get("conclusion"),
+                actor=(run.get("actor") or {}).get("login", ""),
+                branch=run.get("head_branch"),
+                title=run.get("display_title") or run.get("name") or "",
+                url=run.get("html_url", ""),
+            )
+            for run in runs
+        ]
+
+
+def _when(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _pull(item: dict[str, Any]) -> PullInfo:
+    merged = item.get("merged_at")
+    return PullInfo(
+        number=int(item["number"]),
+        title=item.get("title") or "",
+        author=(item.get("user") or {}).get("login", ""),
+        created_at=_when(item["created_at"]),
+        merged_at=_when(merged) if merged else None,
+        draft=bool(item.get("draft")),
+        url=item.get("html_url", ""),
+    )
 
 
 def _repo(item: dict[str, Any]) -> RepoInfo:

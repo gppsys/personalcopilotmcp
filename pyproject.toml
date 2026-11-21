@@ -42,6 +42,7 @@ dependencies = [
     "numpy>=2.5.3",
     "asyncmy>=0.2.16",
     "pdfplumber>=0.11.4",
+    "boto3>=1.35.0",
 ]
 
 [project.optional-dependencies]
@@ -147,6 +148,8 @@ plugins = ["pydantic.mypy"]
 module = [
     "apscheduler.*",
     "sqlmodel.*",
+    "boto3.*",
+    "botocore.*",
 ]
 ignore_missing_imports = true
 

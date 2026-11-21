@@ -19,6 +19,8 @@ x-copilot: &copilot
   volumes:
     - .:/app
     - ${OBSIDIAN_VAULT_PATH:?Set OBSIDIAN_VAULT_PATH in .env}:${OBSIDIAN_VAULT_PATH}
+    # AWS CLI profiles, read-only: the Operación view reads CloudWatch with them.
+    - ${AWS_CONFIG_DIR:-~/.aws}:/root/.aws:ro
   environment:
     - UV_PROJECT_ENVIRONMENT=/opt/venv
     - TZ=${TZ:-America/Mexico_City}

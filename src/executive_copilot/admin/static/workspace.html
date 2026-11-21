@@ -957,6 +957,283 @@
           </div>
         </section>
 
+        <!-- ============ OPERACIÓN ============ -->
+        <section x-show="view === 'ops'" x-cloak>
+          <div class="console rounded-2xl p-4 md:p-6 space-y-5 text-slate-200">
+            <template x-if="!ops">
+              <div class="mono text-sm text-slate-400 py-16 text-center">revisando credenciales de AWS<span class="dots"><span>.</span><span>.</span><span>.</span></span></div>
+            </template>
+
+            <template x-if="ops">
+              <div class="space-y-5">
+                <!-- Banner -->
+                <div class="flex flex-wrap items-center gap-4">
+                  <div class="relative h-4 w-4 shrink-0">
+                    <span class="absolute inset-0 rounded-full animate-ping opacity-50" :class="opsState().dot"></span>
+                    <span class="relative block h-4 w-4 rounded-full" :class="opsState().dot"></span>
+                  </div>
+                  <div class="min-w-0">
+                    <div class="text-xl md:text-2xl font-semibold tracking-tight text-white" x-text="opsState().label"></div>
+                    <div class="mono text-[11px] text-slate-400 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+                      <span>perfil <span class="text-slate-200" x-text="ops.profile"></span> · <span x-text="ops.region"></span></span>
+                      <span x-show="ops.credentials?.ok">sesión de <span class="text-slate-200" x-text="ops.credentials?.identity"></span></span>
+                      <span x-show="ops.snapshot">leído de AWS <span class="text-slate-200" x-text="ops.snapshot ? ago(ops.snapshot.fetched_at) : ''"></span></span>
+                      <span x-show="ops.snapshot">últimos <span x-text="ops.snapshot?.days"></span> días</span>
+                    </div>
+                  </div>
+                  <div class="ml-auto" x-show="ops.enabled && ops.configured">
+                    <button @click="refreshOps()" :disabled="opsBusy"
+                      class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-indigo-500/90 hover:bg-indigo-400 text-white disabled:opacity-60 shadow-[0_0_20px_rgb(99_102_241/.35)]">
+                      <span class="w-4 h-4" :class="opsBusy ? 'animate-spin' : ''" x-html="opsBusy ? icons.refresh : icons.server"></span>
+                      <span x-text="opsBusy ? 'Leyendo AWS…' : 'Leer AWS ahora'"></span>
+                    </button>
+                  </div>
+                </div>
+
+                <template x-if="!ops.enabled || !ops.configured">
+                  <div class="panel p-4 text-sm text-slate-300">Esta vista lee AWS CloudWatch con tu perfil del AWS CLI (solo lectura) y muestra uptime, errores, latencia e incidentes de producción. Para activarla, define <span class="mono text-white">ops.enabled: true</span> y al menos un servicio en <span class="mono text-white">config/config.local.yaml</span> (ver <span class="mono">config.local.example.yaml</span>).</div>
+                </template>
+
+                <!-- Credentials prompt -->
+                <template x-if="ops.credentials && !ops.credentials.ok">
+                  <div class="panel p-4 border-amber-400/40 bg-amber-500/[.07] space-y-3">
+                    <div class="flex items-center gap-2 text-amber-200 font-semibold"><span class="w-4 h-4" x-html="icons.key"></span> Revisa tus credenciales de AWS</div>
+                    <div class="text-sm text-slate-300" x-text="ops.credentials.error"></div>
+                    <div class="text-sm text-slate-400">Ejecuta esto en tu terminal y vuelve a intentar:</div>
+                    <div class="flex items-center gap-2">
+                      <code class="mono text-xs md:text-sm flex-1 min-w-0 overflow-x-auto whitespace-nowrap scroll-thin bg-slate-950/70 border border-slate-700/60 rounded-lg px-3 py-2 text-emerald-200" x-text="ops.credentials.hint"></code>
+                      <button @click="navigator.clipboard.writeText(ops.credentials.hint); toast('Comando copiado')" class="p-2 rounded-lg border border-slate-700/60 text-slate-300 hover:text-white" title="Copiar"><span class="block w-4 h-4" x-html="icons.copy"></span></button>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-3">
+                      <button @click="refreshOps()" :disabled="opsBusy" class="px-3 py-1.5 rounded-lg text-sm font-medium bg-amber-400/90 hover:bg-amber-300 text-slate-950 disabled:opacity-60" x-text="opsBusy ? 'Comprobando…' : 'Reintentar'"></button>
+                      <span class="text-xs text-slate-400">Si el comando pide iniciar sesión: <span class="mono text-slate-300" x-text="'aws login --profile ' + ops.profile"></span></span>
+                    </div>
+                    <div class="text-xs text-amber-200/80" x-show="ops.snapshot">Lo de abajo es la lectura guardada de <span x-text="ops.snapshot ? ago(ops.snapshot.fetched_at) : ''"></span>, no el estado actual.</div>
+                  </div>
+                </template>
+
+                <!-- Non-fatal read errors -->
+                <template x-if="(ops.snapshot?.errors || []).length">
+                  <div class="panel p-3 border-amber-400/30 bg-amber-500/[.06]">
+                    <template x-for="e in ops.snapshot.errors" :key="e.source">
+                      <div class="flex flex-wrap items-start gap-x-2 py-0.5 text-sm"><span class="mono text-[10px] mt-0.5 px-1.5 rounded bg-amber-500/20 text-amber-300 shrink-0">WARN</span><span class="font-medium text-white" x-text="e.source"></span><span class="text-slate-300 basis-full md:basis-auto md:flex-1" x-text="e.error"></span></div>
+                    </template>
+                  </div>
+                </template>
+
+                <!-- Service tabs -->
+                <div class="flex flex-wrap gap-1.5" x-show="(ops.snapshot?.services || []).length > 1">
+                  <template x-for="(s, i) in (ops.snapshot?.services || [])" :key="s.name">
+                    <button @click="opsService = i; opsHover = null; opsDay = null" class="mono text-xs px-2.5 py-1 rounded-md border transition" :class="opsService === i ? 'border-indigo-400/60 bg-indigo-500/20 text-white' : 'border-slate-700/60 text-slate-400 hover:text-slate-200'" x-text="s.name"></button>
+                  </template>
+                </div>
+
+                <template x-if="opsSvc()?.error">
+                  <div class="panel p-4 text-sm text-rose-200 border-rose-400/30"><span class="font-semibold" x-text="opsSvc().name"></span>: <span x-text="opsSvc().error"></span></div>
+                </template>
+
+                <template x-if="opsSvc() && !opsSvc().error">
+                  <div class="space-y-5" :class="ops.credentials?.ok ? '' : 'opacity-70'">
+                    <!-- KPIs -->
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <template x-for="k in opsKpis()" :key="k.label">
+                        <div class="panel p-3.5 relative overflow-hidden" :title="k.title">
+                          <div class="text-[11px] uppercase tracking-wider text-slate-400" x-text="k.label"></div>
+                          <div class="mono text-2xl font-semibold mt-1 text-white" x-text="k.value"></div>
+                          <div class="text-[11px] text-slate-400 mt-0.5" x-text="k.hint"></div>
+                          <div class="text-[11px] text-slate-500" x-text="k.prev"></div>
+                          <div class="absolute -right-6 -bottom-6 w-20 h-20 rounded-full blur-2xl opacity-30" :class="k.glow"></div>
+                        </div>
+                      </template>
+                    </div>
+
+                    <!-- Day strip -->
+                    <div class="panel p-4">
+                      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3">
+                        <h3 class="text-sm font-semibold text-white"><span x-text="opsSvc().name"></span> · día a día</h3>
+                        <div class="flex items-center gap-3 text-[11px] text-slate-400 ml-auto">
+                          <template x-for="l in ['ok', 'warn', 'bad']" :key="l">
+                            <span class="flex items-center gap-1.5"><span class="grid place-items-center h-3.5 w-3.5 rounded text-[9px] font-bold text-slate-950" :class="opsLevel(l).cell" x-text="opsLevel(l).glyph"></span><span x-text="opsLevel(l).label"></span></span>
+                          </template>
+                        </div>
+                      </div>
+                      <div class="flex gap-1">
+                        <template x-for="d in opsSvc().days" :key="d.date">
+                          <button @click="opsDay = opsDay === d.date ? null : d.date" @mouseenter="opsDayHover = d.date" @mouseleave="opsDayHover = null"
+                            class="flex-1 min-w-0 group" :aria-label="shortDate(d.date) + ': ' + opsLevel(d.level).label">
+                            <div class="h-10 rounded-md grid place-items-center text-sm font-bold text-slate-950 transition ring-offset-2 ring-offset-[#0b1120]" :class="opsLevel(d.level).cell + (opsDay === d.date ? ' ring-2 ring-white' : ' group-hover:ring-2 group-hover:ring-slate-400')" x-text="opsLevel(d.level).glyph"></div>
+                            <div class="mono text-[10px] text-slate-500 mt-1 text-center" x-text="Number(d.date.slice(8))"></div>
+                          </button>
+                        </template>
+                      </div>
+                      <div class="mono text-[11px] text-slate-300 mt-2 min-h-[2.25rem]" x-text="opsDayLine()"></div>
+                    </div>
+
+                    <!-- Hourly charts -->
+                    <div class="panel p-4">
+                      <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-1">
+                        <h3 class="text-sm font-semibold text-white">Hora por hora</h3>
+                        <span class="text-[11px] text-slate-500">franjas sombreadas = incidentes detectados</span>
+                      </div>
+                      <div class="mono text-[11px] text-slate-300 min-h-[2.25rem]" x-text="opsHourLine()"></div>
+                      <div class="select-none" @mousemove="opsMove($event)" @mouseleave="opsHover = null" @touchstart.passive="opsMove($event)" @touchmove.passive="opsMove($event)">
+                        <template x-for="c in opsCharts" :key="c.id">
+                          <div class="mt-3">
+                            <div class="flex flex-wrap items-center gap-x-3 text-[11px] text-slate-400 mb-1">
+                              <span class="font-medium text-slate-200" x-text="c.title"></span>
+                              <template x-for="l in c.legend" :key="l.label"><span class="flex items-center gap-1.5"><span class="h-2 w-3 rounded-sm" :style="'background:' + l.color"></span><span x-text="l.label"></span></span></template>
+                              <span class="ml-auto mono text-slate-500">máx <span x-text="c.fmt(opsMax(c.id))"></span></span>
+                            </div>
+                            <div class="relative h-24 md:h-28 border-b border-slate-700/60">
+                              <div class="absolute inset-0" x-html="opsChart(c.id)"></div>
+                              <div x-show="opsHover !== null" class="absolute top-0 bottom-0 w-px bg-slate-200/70 pointer-events-none" :style="'left:' + opsLeft(opsHover + .5)"></div>
+                              <template x-if="c.id === 'requests'">
+                                <div>
+                                  <template x-for="m in opsSvc().changes" :key="m.kind + m.at + m.ref">
+                                    <a :href="m.url" target="_blank" rel="noopener" class="absolute top-0 -translate-x-1/2 h-2.5 w-2.5 rounded-full border-2 border-slate-100" :class="m.kind === 'deploy' ? 'bg-slate-100' : 'bg-transparent'" :style="'left:' + opsLeft(opsPos(m.at))" :title="(m.kind === 'deploy' ? 'Despliegue ' : 'PR ') + m.ref + ' · ' + m.title + ' · ' + opsWhen(m.at)"></a>
+                                  </template>
+                                </div>
+                              </template>
+                            </div>
+                          </div>
+                        </template>
+                        <div class="relative h-4 mt-1">
+                          <template x-for="(t, i) in opsTicks()" :key="t.label + t.left">
+                            <span class="absolute mono text-[10px] text-slate-500 -translate-x-1/2" :class="i % 2 ? 'hidden sm:inline' : ''" :style="'left:' + t.left" x-text="t.label"></span>
+                          </template>
+                        </div>
+                      </div>
+                      <div class="text-[11px] text-slate-500 mt-2" x-show="opsSvc().changes.length">○ PR fusionado · ● despliegue a producción</div>
+                    </div>
+
+                    <!-- Incidents -->
+                    <div class="panel overflow-hidden">
+                      <div class="flex items-center gap-2 px-4 py-3 border-b border-slate-800/70">
+                        <h3 class="text-sm font-semibold text-white">Incidentes detectados</h3>
+                        <span class="mono text-[11px] text-slate-500" x-text="opsSvc().incidents.length + ' en ' + ops.snapshot.days + ' días'"></span>
+                        <span class="ml-auto text-[11px] text-slate-500 hidden md:inline" x-text="'5xx ≥ ' + ops.thresholds.error_rate_warn + ' % · p95 ≥ ' + opsMs(ops.thresholds.latency_warn_ms) + ' · sin host sano'"></span>
+                      </div>
+                      <div x-show="!opsSvc().incidents.length" class="p-8 text-sm text-slate-500 text-center">Ninguna hora superó los umbrales en este periodo.</div>
+                      <template x-for="i in opsSvc().incidents" :key="i.start">
+                        <div class="px-4 py-3 border-b border-slate-800/50 last:border-0">
+                          <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <span class="mono text-[10px] px-1.5 py-0.5 rounded font-semibold" :class="opsLevel(i.level).badge" x-text="i.level === 'bad' ? '× GRAVE' : '! DEGRADADO'"></span>
+                            <span class="text-sm font-medium text-white" x-text="opsWhen(i.start)"></span>
+                            <span class="mono text-[11px] text-slate-400" x-text="i.hours + ' h'"></span>
+                            <template x-for="r in i.reasons" :key="r"><span class="mono text-[10px] px-1.5 py-0.5 rounded bg-slate-700/50 text-slate-300" x-text="opsReason(r)"></span></template>
+                          </div>
+                          <div class="mono text-[11px] text-slate-400 mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5">
+                            <span x-show="i.errors"><span class="text-slate-200" x-text="opsInt(i.errors)"></span> errores 5xx · pico <span class="text-slate-200" x-text="i.peak_error_rate + ' %'"></span></span>
+                            <span x-show="i.peak_p95_ms">p95 pico <span class="text-slate-200" x-text="opsMs(i.peak_p95_ms)"></span></span>
+                            <span x-show="i.down_minutes"><span class="text-slate-200" x-text="i.down_minutes + ' min'"></span> sin host sano</span>
+                            <span x-show="i.peak_db_cpu >= 70">CPU de la base <span class="text-slate-200" x-text="Math.round(i.peak_db_cpu) + ' %'"></span></span>
+                          </div>
+                          <template x-if="i.changes.length">
+                            <div class="mt-2 space-y-0.5">
+                              <div class="text-[11px] text-slate-500">Cambios en las 6 h previas o durante el incidente:</div>
+                              <template x-for="c in i.changes" :key="c.kind + c.at + c.ref">
+                                <a :href="c.url" target="_blank" rel="noopener" class="flex items-baseline gap-2 text-xs text-slate-300 hover:text-white">
+                                  <span class="mono text-[10px] text-slate-500 shrink-0" x-text="time(c.at)"></span>
+                                  <span class="mono text-[10px] px-1 rounded bg-slate-700/50 shrink-0" x-text="c.kind === 'deploy' ? 'deploy' : c.ref"></span>
+                                  <span class="truncate" x-text="c.title"></span>
+                                  <span class="text-slate-500 shrink-0" x-text="c.author"></span>
+                                </a>
+                              </template>
+                            </div>
+                          </template>
+                        </div>
+                      </template>
+                    </div>
+
+                    <!-- Dependencies -->
+                    <div>
+                      <h3 class="text-sm font-semibold text-white mb-2">Dependencias</h3>
+                      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <template x-for="d in opsSvc().dependencies" :key="d.kind + d.name">
+                          <div class="panel p-4">
+                            <div class="flex items-center gap-2">
+                              <span class="mono text-[10px] px-1.5 py-0.5 rounded bg-slate-700/50 text-slate-300" x-text="{ database: 'BASE DE DATOS', server: 'SERVIDOR', cache: 'CACHÉ' }[d.kind]"></span>
+                              <span class="text-sm font-medium text-white truncate" x-text="d.name"></span>
+                            </div>
+                            <div class="mono text-[11px] text-slate-500 mt-1 truncate" x-text="opsFacts(d)"></div>
+                            <div class="mt-3 space-y-2.5">
+                              <template x-for="m in d.metrics" :key="m.key">
+                                <div class="flex items-center gap-3">
+                                  <div class="w-32 shrink-0">
+                                    <div class="text-[11px] text-slate-400 truncate" x-text="m.label"></div>
+                                    <div class="mono text-sm text-white" x-text="opsVal(m.latest, m.unit)"></div>
+                                  </div>
+                                  <div class="flex-1 h-8 min-w-0" x-html="opsSpark(m)"></div>
+                                  <div class="mono text-[10px] text-slate-500 w-20 text-right shrink-0"><div x-text="'máx ' + opsVal(m.max, m.unit)"></div><div x-text="'mín ' + opsVal(m.min, m.unit)"></div></div>
+                                </div>
+                              </template>
+                            </div>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+
+                    <!-- Coverage + alarms -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div class="panel overflow-hidden">
+                        <div class="px-4 py-3 border-b border-slate-800/70"><h3 class="text-sm font-semibold text-white">Cobertura de monitoreo</h3></div>
+                        <template x-for="c in opsSvc().coverage" :key="c.title + c.detail">
+                          <div class="px-4 py-2.5 border-b border-slate-800/50 last:border-0">
+                            <div class="flex items-center gap-2"><span class="mono text-[10px] px-1.5 py-0.5 rounded font-semibold shrink-0" :class="{ gap: 'bg-rose-500/20 text-rose-200', risk: 'bg-amber-500/20 text-amber-200', ok: 'bg-emerald-500/20 text-emerald-200' }[c.level]" x-text="{ gap: 'HUECO', risk: 'RIESGO', ok: 'OK' }[c.level]"></span><span class="text-sm text-white" x-text="c.title"></span></div>
+                            <div class="text-xs text-slate-400 mt-1" x-text="c.detail"></div>
+                          </div>
+                        </template>
+                      </div>
+                      <div class="panel overflow-hidden">
+                        <div class="px-4 py-3 border-b border-slate-800/70 flex items-center gap-2"><h3 class="text-sm font-semibold text-white">Alarmas de CloudWatch</h3><span class="mono text-[11px] text-slate-500" x-text="opsSvc().alarms.length + ' sobre este servicio'"></span></div>
+                        <div x-show="!opsSvc().alarms.length" class="p-6 text-sm text-slate-500 text-center">Ninguna alarma apunta a los recursos de este servicio.</div>
+                        <template x-for="a in opsSvc().alarms" :key="a.name">
+                          <div class="px-4 py-2.5 border-b border-slate-800/50 last:border-0">
+                            <div class="flex items-center gap-2"><span class="mono text-[10px] px-1.5 py-0.5 rounded font-semibold shrink-0" :class="a.state === 'ALARM' ? 'bg-rose-500/20 text-rose-200' : a.state === 'OK' ? 'bg-emerald-500/20 text-emerald-200' : 'bg-slate-700/50 text-slate-300'" x-text="a.state"></span><span class="text-sm text-white truncate" x-text="a.name"></span></div>
+                            <div class="mono text-[11px] text-slate-400 mt-1"><span x-text="a.metric"></span> · umbral <span x-text="a.threshold"></span> · en este estado <span x-text="ago(a.since)"></span> · se disparó <span x-text="a.fired"></span> <span x-text="a.fired === 1 ? 'vez' : 'veces'"></span></div>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+
+                    <!-- Changes -->
+                    <template x-if="opsSvc().github">
+                      <div class="panel overflow-hidden">
+                        <div class="px-4 py-3 border-b border-slate-800/70 flex flex-wrap items-center gap-x-3 gap-y-1">
+                          <h3 class="text-sm font-semibold text-white">Cambios · <span class="mono font-normal" x-text="opsSvc().github.repo"></span></h3>
+                          <span class="mono text-[11px] text-slate-500" x-text="opsSvc().github.merged + ' PR fusionados · ' + opsSvc().github.deploys + ' despliegues'"></span>
+                          <button x-show="opsSvc().github.open" @click="opsOpenPrs = !opsOpenPrs" class="ml-auto mono text-[11px] px-2 py-1 rounded-md border border-slate-700/60 text-slate-300 hover:text-white" x-text="(opsOpenPrs ? 'Ver cambios aplicados' : (opsSvc().github.open || []).length + ' PR abiertos')"></button>
+                        </div>
+                        <div x-show="!opsOpenPrs">
+                          <div x-show="!opsSvc().changes.length" class="p-6 text-sm text-slate-500 text-center">Sin cambios leídos en este periodo.</div>
+                          <template x-for="c in opsSvc().changes.slice(0, opsAllChanges ? 200 : 12)" :key="c.kind + c.at + c.ref">
+                            <a :href="c.url" target="_blank" rel="noopener" class="flex items-baseline gap-3 px-4 py-2 border-b border-slate-800/50 last:border-0 hover:bg-slate-800/30">
+                              <span class="mono text-[11px] text-slate-500 w-28 shrink-0" x-text="opsWhen(c.at)"></span>
+                              <span class="mono text-[10px] px-1.5 py-0.5 rounded shrink-0" :class="c.kind === 'deploy' ? (c.result === 'failure' ? 'bg-rose-500/20 text-rose-200' : 'bg-slate-100 text-slate-900') : 'bg-slate-700/50 text-slate-300'" x-text="c.kind === 'deploy' ? (c.result === 'failure' ? 'deploy falló' : 'deploy') : c.ref"></span>
+                              <span class="text-sm text-slate-200 truncate" x-text="c.title"></span>
+                              <span class="text-xs text-slate-500 ml-auto shrink-0 hidden sm:inline" x-text="c.author"></span>
+                            </a>
+                          </template>
+                          <button x-show="opsSvc().changes.length > 12 && !opsAllChanges" @click="opsAllChanges = true" class="w-full px-4 py-2 text-xs text-slate-400 hover:text-white">Ver los <span x-text="opsSvc().changes.length"></span></button>
+                        </div>
+                        <div x-show="opsOpenPrs">
+                          <template x-for="p in (opsSvc().github.open || [])" :key="p.number">
+                            <a :href="p.url" target="_blank" rel="noopener" class="flex items-baseline gap-3 px-4 py-2 border-b border-slate-800/50 last:border-0 hover:bg-slate-800/30">
+                              <span class="mono text-[10px] px-1.5 py-0.5 rounded bg-slate-700/50 text-slate-300 shrink-0" x-text="'#' + p.number"></span>
+                              <span class="text-sm text-slate-200 truncate" x-text="(p.draft ? '[borrador] ' : '') + p.title"></span>
+                              <span class="text-xs text-slate-500 ml-auto shrink-0" x-text="p.author + ' · abierto ' + ago(p.created_at)"></span>
+                            </a>
+                          </template>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+        </section>
+
         <!-- ============ ESTADO ============ -->
         <section x-show="view === 'status'" x-cloak>
           <div class="console rounded-2xl p-4 md:p-6 space-y-5 text-slate-200">
@@ -1347,6 +1624,7 @@ const ICONS = {
   copy: svg('<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'),
   pulse: svg('<path d="M3 12h4l3-8 4 16 3-8h4"/>'),
   shield: svg('<path d="M12 3l8 3v6c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>'),
+  server: svg('<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>'),
   spark: svg('<path d="M12 3l1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2z"/>'),
 };
 
@@ -1377,6 +1655,7 @@ function workspace() {
       { id: 'map', label: 'Mapa de relaciones', icon: 'graph' },
       { id: 'accounts', label: 'Cuentas', icon: 'key', badge: true },
       { id: 'security', label: 'Seguridad', icon: 'shield', badge: true },
+      { id: 'ops', label: 'Operación', icon: 'server' },
       { id: 'status', label: 'Estado', icon: 'pulse', badge: true },
     ],
     knowledgeDashboard: null, knowledgeResults: [], knowledgeQuery: '', knowledgeFolder: '', knowledgeTag: '', knowledgeCategory: '',
@@ -1387,7 +1666,7 @@ function workspace() {
     view: 'today',
     dark: document.documentElement.classList.contains('dark'),
     chatOpen: window.innerWidth >= 1280,
-    loading: { today: false, tasks: false, calendar: false, week: false, notes: false, sync: false, docs: false, map: false, accounts: false, testAll: false, status: false, checks: false, security: false },
+    loading: { today: false, tasks: false, calendar: false, week: false, notes: false, sync: false, docs: false, map: false, accounts: false, testAll: false, status: false, checks: false, security: false, ops: false },
     busy: { task: false, event: false, note: false, cal: false }, toasts: [],
     overview: null, tasks: null, taskTab: 'asana', taskFilter: '',
     taskTabs: [
@@ -1414,6 +1693,12 @@ function workspace() {
     ],
     accountsData: null, tests: {}, addOpen: false,
     security: null, securityFilter: 'all', securityQuery: '', securityBusy: false, securityDev: false, securityRepo: '', newWatch: { product: '', custom: '', where: '' },
+    ops: null, opsBusy: false, opsService: 0, opsHover: null, opsDay: null, opsDayHover: null, opsOpenPrs: false, opsAllChanges: false,
+    opsCharts: [
+      { id: 'requests', title: 'Peticiones por hora', legend: [], fmt: n => new Intl.NumberFormat('es-MX').format(n) },
+      { id: 'errors', title: 'Errores 5xx por hora', legend: [{ label: 'aplicación', color: '#6366f1' }, { label: 'balanceador', color: '#0891b2' }], fmt: n => new Intl.NumberFormat('es-MX').format(n) },
+      { id: 'latency', title: 'Latencia', legend: [{ label: 'p95', color: '#6366f1' }, { label: 'p99', color: '#0891b2' }], fmt: n => n < 1000 ? Math.round(n) + ' ms' : (n / 1000).toFixed(1) + ' s' },
+    ],
     status: null, checks: {}, statusTick: 0, STATUS_EVERY: 30, statusTimer: null, nowTs: Date.now(), eventFilter: 'all',
     newAccount: { family: 'google', account_id: '', client_id: '', client_secret: '' },
     calendarsData: null, calSettings: null, calForm: { default: '', email: '__default', sources: [] },
@@ -1480,6 +1765,8 @@ function workspace() {
       if (id === 'map') { if (!this.graph) this.loadGraph(); else this.$nextTick(() => this.renderGraph()); }
       if (id === 'accounts' && !this.accountsData) this.loadAccounts();
       if (id === 'security') this.loadSecurity(!this.security);
+      // Opening the view re-checks the AWS session; CloudWatch is only read when the stored reading is stale.
+      if (id === 'ops') this.loadOps();
       if (id === 'status') {
         this.loadStatus();
         if (!Object.keys(this.checks).length) this.runChecks(false);
@@ -1490,7 +1777,7 @@ function workspace() {
       ({ today: () => this.loadOverview(), tasks: () => this.loadTasks(),
          calendar: () => this.loadWeek(), notes: () => this.loadNotes(),
          knowledge: () => this.loadKnowledge(), map: () => this.loadGraph(), accounts: () => this.loadAccounts(),
-         security: () => this.loadSecurity(true),
+         security: () => this.loadSecurity(true), ops: () => this.refreshOps(),
          status: () => { this.loadStatus(); this.runChecks(true); } })[this.view]();
     },
     errorsFor(view) {
@@ -2082,6 +2369,138 @@ function workspace() {
     },
 
     // ---------- accounts ----------
+    // ---------- operations (AWS) ----------
+    async loadOps() {
+      this.loading.ops = true;
+      try {
+        this.ops = await this.api('/api/ws/ops');
+        // A stale or missing reading is renewed right away when the AWS session allows it.
+        if (this.ops.credentials?.ok && this.ops.stale) await this.refreshOps(true);
+      } catch (e) { this.toast('No se pudo cargar Operación: ' + e.message, true); }
+      finally { this.loading.ops = false; }
+    },
+    async refreshOps(quiet = false) {
+      if (this.opsBusy) return;
+      this.opsBusy = true; this.loading.ops = true;
+      try {
+        this.ops = await this.api('/api/ws/ops/refresh', { method: 'POST' });
+        if (this.ops.error) this.toast('AWS no devolvió datos: ' + this.ops.error, true);
+        else if (this.ops.credentials && !this.ops.credentials.ok) { if (!quiet) this.toast('Revisa tus credenciales de AWS', true); }
+        else if (!quiet) this.toast('Lectura de AWS actualizada');
+      } catch (e) { this.toast('No se pudo leer AWS: ' + e.message, true); }
+      finally { this.opsBusy = false; this.loading.ops = false; }
+    },
+    opsSvc() { return (this.ops?.snapshot?.services || [])[this.opsService] || null; },
+    opsInt(n) { return new Intl.NumberFormat('es-MX').format(n ?? 0); },
+    opsCompact(n) { return new Intl.NumberFormat('es-MX', { notation: 'compact', maximumFractionDigits: 1 }).format(n ?? 0); },
+    opsMs(ms) { return ms == null ? '–' : ms < 1000 ? Math.round(ms) + ' ms' : (ms / 1000).toFixed(1) + ' s'; },
+    opsVal(v, unit) { return v == null ? '–' : (Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 10) / 10) + (unit ? ' ' + unit : ''); },
+    opsWhen(iso) {
+      return new Intl.DateTimeFormat('es-MX', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: TZ }).format(new Date(iso));
+    },
+    opsLevel(level) {
+      return {
+        ok: { label: 'Normal', glyph: '', cell: 'bg-emerald-500/80', badge: 'bg-emerald-500/20 text-emerald-200' },
+        warn: { label: 'Degradado', glyph: '!', cell: 'bg-amber-400', badge: 'bg-amber-500/20 text-amber-200' },
+        bad: { label: 'Incidente grave', glyph: '×', cell: 'bg-rose-500', badge: 'bg-rose-500/25 text-rose-200' },
+      }[level] || { label: level, glyph: '?', cell: 'bg-slate-600', badge: 'bg-slate-700/50 text-slate-300' };
+    },
+    opsReason(r) { return { down: 'sin host sano', errors: 'errores 5xx', latency: 'latencia', db_cpu: 'CPU de la base' }[r] || r; },
+    opsState() {
+      const o = this.ops, s = this.opsSvc();
+      if (!o.enabled || !o.configured) return { label: 'Operación sin configurar', dot: 'bg-slate-500' };
+      if (o.credentials && !o.credentials.ok) return { label: 'AWS necesita que revises tus credenciales', dot: 'bg-amber-400' };
+      if (!s) return { label: this.opsBusy ? 'Leyendo AWS…' : 'Sin lecturas todavía', dot: 'bg-slate-500' };
+      if (s.error) return { label: 'No se pudo leer ' + s.name, dot: 'bg-rose-500' };
+      if (s.targets.some(t => !['healthy', 'unused'].includes(t.state))) return { label: 'Hay destinos no sanos ahora', dot: 'bg-rose-500' };
+      const recent = s.hours.slice(-24).filter(h => h.level !== 'ok');
+      if (recent.some(h => h.level === 'bad')) return { label: 'Incidente grave en las últimas 24 h', dot: 'bg-rose-500' };
+      if (recent.length) return { label: 'Degradado en las últimas 24 h', dot: 'bg-amber-400' };
+      return { label: s.name + ' operando con normalidad', dot: 'bg-emerald-400' };
+    },
+    opsKpis() {
+      const m = this.opsSvc().summary, p = m.previous, days = this.ops.snapshot.days;
+      const pct = v => v == null ? '–' : v.toFixed(2) + ' %';
+      return [
+        { label: 'Disponibilidad', value: pct(m.availability), hint: `${this.opsInt(m.errors)} errores 5xx de ${this.opsCompact(m.requests)}`,
+          prev: p ? `${days} días previos: ${pct(p.availability)}` : '', glow: 'bg-emerald-500', title: 'Peticiones que no terminaron en 5xx (aplicación + balanceador)' },
+        { label: 'Uptime por host', value: pct(m.uptime_hosts), hint: `${m.down_minutes} min sin host sano`,
+          prev: 'medido dentro de AWS', glow: 'bg-indigo-500', title: 'Intervalos de 5 min en los que el balanceador tenía al menos un destino sano' },
+        { label: 'Latencia p95', value: this.opsMs(m.p95_ms), hint: `${this.opsCompact(m.requests)} peticiones`,
+          prev: p ? `${days} días previos: ${this.opsMs(p.p95_ms)} · ${this.opsCompact(p.requests)}` : '', glow: 'bg-cyan-500', title: 'Tiempo de respuesta de la aplicación, percentil 95 de todo el periodo' },
+        { label: 'Incidentes', value: m.incidents, hint: `${m.bad_incidents} graves`,
+          prev: `5xx: ${this.opsCompact(m.lb_5xx)} balanceador · ${this.opsCompact(m.app_5xx)} app`, glow: 'bg-rose-500', title: 'Grupos de horas que superaron los umbrales' },
+      ];
+    },
+    opsDayLine() {
+      const s = this.opsSvc(), key = this.opsDayHover || this.opsDay, d = s.days.find(x => x.date === key);
+      if (!d) return 'Elige un día para ver su detalle.';
+      return `${this.dayLabel(d.date)} · ${this.opsLevel(d.level).label} · ${this.opsInt(d.requests)} peticiones · ${this.opsInt(d.errors)} errores 5xx (${d.error_rate.toFixed(2)} %)`
+        + ` · p95 pico ${this.opsMs(d.p95_peak_ms)} · ${d.down_minutes} min sin host sano · ${d.flagged_hours} h marcadas`;
+    },
+    opsHourLine() {
+      const h = this.opsHover === null ? null : this.opsSvc().hours[this.opsHover];
+      if (!h) return 'Pasa el cursor (o toca) sobre las gráficas para ver cada hora.';
+      return `${this.opsWhen(h.t)} · ${this.opsInt(h.requests)} peticiones · 5xx aplicación ${this.opsInt(h.app_5xx)} · balanceador ${this.opsInt(h.lb_5xx)}`
+        + (h.lb_5xx ? ` (502: ${h.lb_502} · 503: ${h.lb_503} · 504: ${h.lb_504})` : '') + ` · ${h.error_rate.toFixed(2)} % · p95 ${this.opsMs(h.p95_ms)} · p99 ${this.opsMs(h.p99_ms)}`
+        + (h.down_minutes ? ` · ${h.down_minutes} min sin host sano` : '') + (h.reasons.length ? ' · ' + this.opsLevel(h.level).label.toLowerCase() : '');
+    },
+    opsMove(event) {
+      const s = this.opsSvc(), rect = event.currentTarget.getBoundingClientRect();
+      const x = (event.touches ? event.touches[0].clientX : event.clientX) - rect.left;
+      this.opsHover = Math.max(0, Math.min(s.hours.length - 1, Math.floor(x / rect.width * s.hours.length)));
+    },
+    opsPos(iso) { const H = this.opsSvc().hours; return (new Date(iso) - new Date(H[0].t)) / 36e5; },
+    opsLeft(pos) { return Math.max(0, Math.min(100, pos / this.opsSvc().hours.length * 100)) + '%'; },
+    opsTicks() {
+      // One label per local day, placed where that day starts.
+      const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: TZ }), ticks = [];
+      let last = null;
+      this.opsSvc().hours.forEach((h, i) => {
+        const day = fmt.format(new Date(h.t));
+        if (day !== last && last !== null) ticks.push({ left: this.opsLeft(i), label: String(Number(day.slice(8))) });
+        last = day;
+      });
+      return ticks;
+    },
+    opsMax(kind) {
+      const H = this.opsSvc().hours;
+      const value = { requests: h => h.requests, errors: h => h.app_5xx + h.lb_5xx, latency: h => Math.max(h.p99_ms || 0, h.p95_ms || 0) }[kind];
+      return Math.max(1, ...H.map(value));
+    },
+    opsChart(kind) {
+      const s = this.opsSvc(), H = s.hours, n = H.length, max = this.opsMax(kind);
+      const C1 = '#6366f1', C2 = '#0891b2';
+      const y = v => (100 - (v / max) * 96).toFixed(2);
+      const bands = s.incidents.map(i => `<rect x="${Math.round(this.opsPos(i.start))}" y="0" width="${i.hours}" height="100" fill="${i.level === 'bad' ? 'rgb(244 63 94 / .16)' : 'rgb(251 191 36 / .11)'}"/>`).join('');
+      const grid = `<line x1="0" x2="${n}" y1="52" y2="52" stroke="rgb(148 163 184 / .14)" vector-effect="non-scaling-stroke"/>`;
+      const path = key => { let d = '', pen = false; H.forEach((h, i) => { if (h[key] == null) { pen = false; return; } d += `${pen ? 'L' : 'M'}${i + .5} ${y(h[key])}`; pen = true; }); return d; };
+      const line = (key, color) => `<path d="${path(key)}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
+      let marks = '';
+      if (kind === 'requests') marks = `<path d="${path('requests')}L${n - .5} 100L.5 100Z" fill="${C1}" fill-opacity=".18"/>` + line('requests', C1);
+      if (kind === 'errors') marks = H.map((h, i) => {
+        const a = h.app_5xx / max * 96, b = h.lb_5xx / max * 96;
+        return (a ? `<rect x="${i + .1}" y="${(100 - a).toFixed(2)}" width=".8" height="${a.toFixed(2)}" fill="${C1}"/>` : '')
+          + (b ? `<rect x="${i + .1}" y="${(100 - a - b).toFixed(2)}" width=".8" height="${b.toFixed(2)}" fill="${C2}"/>` : '');
+      }).join('');
+      if (kind === 'latency') marks = line('p99_ms', C2) + line('p95_ms', C1);
+      return `<svg viewBox="0 0 ${n} 100" preserveAspectRatio="none" class="w-full h-full block" role="img">${bands}${grid}${marks}</svg>`;
+    },
+    opsSpark(m) {
+      const v = m.series, n = v.length, present = v.filter(x => x != null);
+      if (!present.length) return '<div class="mono text-[10px] text-slate-600 pt-2">sin datos</div>';
+      const lo = m.unit === '%' ? 0 : Math.min(...present), hi = m.unit === '%' ? 100 : Math.max(...present), span = (hi - lo) || 1;
+      let d = '', pen = false;
+      v.forEach((x, i) => { if (x == null) { pen = false; return; } d += `${pen ? 'L' : 'M'}${i} ${(96 - (x - lo) / span * 92).toFixed(1)}`; pen = true; });
+      return `<svg viewBox="0 0 ${n} 100" preserveAspectRatio="none" class="w-full h-full block"><path d="${d}" fill="none" stroke="#6366f1" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
+    },
+    opsFacts(d) {
+      const f = d.facts || {};
+      if (d.kind === 'database') return [f.engine + ' ' + f.version, f.class, f.storage_gb + ' GB', f.multi_az ? 'Multi-AZ' : 'una zona', f.status].filter(Boolean).join(' · ');
+      if (d.kind === 'server') return [f.id, f.type, f.state].filter(Boolean).join(' · ');
+      return [f.id, f.multi_az ? 'Multi-AZ' : 'una zona', f.status].filter(Boolean).join(' · ');
+    },
+
     // ---------- security ----------
     async loadSecurity(withWatchlist = true) {
       this.loading.security = true;

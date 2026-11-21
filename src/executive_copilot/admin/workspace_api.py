@@ -429,6 +429,26 @@ def create_workspace_router(config_dir: Path, credential_manager: CredentialMana
             state["checks_at"] = time.monotonic()
         return {"checks": state["checks"]}
 
+    # --- operations (AWS CloudWatch) ----------------------------------------
+
+    def ops() -> Any:
+        from executive_copilot.config import load_config
+        from executive_copilot.services.ops import OpsService
+
+        return OpsService(load_config(config_dir), credential_manager)
+
+    @router.get("/ops")
+    async def ops_overview() -> dict[str, Any]:
+        """AWS credentials as they are now plus the last stored reading (no CloudWatch calls)."""
+        result: dict[str, Any] = await ops().overview()
+        return result
+
+    @router.post("/ops/refresh")
+    async def ops_refresh() -> dict[str, Any]:
+        """Validate the AWS profile, read CloudWatch and store the new reading."""
+        result: dict[str, Any] = await ops().refresh()
+        return result
+
     # --- security ---------------------------------------------------------
 
     def security(ai: bool = False) -> SecurityScanService:

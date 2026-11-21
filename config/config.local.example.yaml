@@ -51,3 +51,20 @@ obsidian:
   documents_folder: Work/Documents # imported PDFs land here as Markdown notes (null disables)
   index_folders: [Work]            # folders the assistant can search (default: top folder of meetings_folder)
   index_exclude: []                # globs never indexed, e.g. ["Work/Private/*"]
+
+# Operación view: uptime and health of production from AWS CloudWatch (read-only).
+# Uses the AWS CLI profile in ~/.aws (mounted read-only in the container).
+ops:
+  enabled: false
+  profile: default
+  region: us-east-1
+  days: 14
+  services:
+    - name: API
+      load_balancer: my-alb                 # Application Load Balancer name
+      database: my-rds-instance             # optional
+      cache: my-redis-group                 # optional (ElastiCache replication group)
+      host_metrics_namespace: null          # optional (CloudWatch agent: mem/disk)
+      domain: api.example.com               # optional (looks for a Route 53 health check)
+      repo: my-org/my-api                   # optional (merged PRs and deploys)
+      deploy_workflow: deploy_prod.yml      # optional

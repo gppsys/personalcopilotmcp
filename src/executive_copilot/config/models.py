@@ -429,6 +429,42 @@ class SecurityConfig(BaseModel):
     ignore: list[SecurityIgnore] = Field(default_factory=list)
 
 
+class OpsServiceConfig(BaseModel):
+    """One production service watched in the Operación view (AWS resource names)."""
+
+    name: str = Field(description="Display name, e.g. Payments API")
+    load_balancer: str = Field(description="Application Load Balancer name")
+    database: str | None = Field(default=None, description="RDS instance identifier")
+    cache: str | None = Field(default=None, description="ElastiCache replication group id")
+    host_metrics_namespace: str | None = Field(
+        default=None, description="CloudWatch agent namespace with mem_used_percent / disk_used_percent"
+    )
+    domain: str | None = Field(default=None, description="Public host name (to look for a Route 53 health check)")
+    repo: str | None = Field(default=None, description="GitHub repository, owner/name")
+    deploy_workflow: str | None = Field(default=None, description="Workflow file that deploys to production")
+
+
+class OpsConfig(BaseModel):
+    """Operations dashboard: uptime and health of production read from AWS CloudWatch.
+
+    Read-only and on demand. Credentials are the AWS CLI profile of whoever runs the
+    container (~/.aws mounted read-only); every refresh validates them first.
+    """
+
+    enabled: bool = Field(default=False, description="Show data in the Operación view")
+    profile: str = Field(default="default", description="AWS CLI profile")
+    region: str = Field(default="us-east-1")
+    days: int = Field(default=14, ge=1, le=30, description="Window shown")
+    cache_minutes: int = Field(default=15, ge=1, description="Reuse the last reading this long")
+    error_rate_warn: float = Field(default=2.0, description="5xx % of requests that marks an hour/day degraded")
+    error_rate_bad: float = Field(default=5.0, description="5xx % of requests that marks an hour/day bad")
+    latency_warn_ms: int = Field(default=1000, description="Hourly p95 that marks an hour degraded")
+    latency_bad_ms: int = Field(default=2500, description="Hourly p95 that marks an hour bad")
+    db_cpu_warn: float = Field(default=85.0, description="Hourly average database CPU % that marks an hour degraded")
+    github_account: str = Field(default="default", description="Credential account holding the GitHub token")
+    services: list[OpsServiceConfig] = Field(default_factory=list)
+
+
 class CalendarDefaultsConfig(BaseModel):
     """Where new events go when the caller does not name a calendar."""
 
@@ -525,6 +561,7 @@ class AppConfig(BaseSettings):
     calendar_defaults: CalendarDefaultsConfig = Field(default_factory=CalendarDefaultsConfig)
     email_calendar: EmailCalendarConfig = Field(default_factory=EmailCalendarConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
+    ops: OpsConfig = Field(default_factory=OpsConfig)
 
     @model_validator(mode="before")
     @classmethod
