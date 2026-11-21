@@ -1024,7 +1024,7 @@
                 <!-- Service tabs -->
                 <div class="flex flex-wrap gap-1.5" x-show="(ops.snapshot?.services || []).length > 1">
                   <template x-for="(s, i) in (ops.snapshot?.services || [])" :key="s.name">
-                    <button @click="opsService = i; opsHover = null; opsDay = null" class="mono text-xs px-2.5 py-1 rounded-md border transition" :class="opsService === i ? 'border-indigo-400/60 bg-indigo-500/20 text-white' : 'border-slate-700/60 text-slate-400 hover:text-slate-200'" x-text="s.name"></button>
+                    <button @click="opsService = i; opsSetRange({ mode: 'all' })" class="mono text-xs px-2.5 py-1 rounded-md border transition" :class="opsService === i ? 'border-indigo-400/60 bg-indigo-500/20 text-white' : 'border-slate-700/60 text-slate-400 hover:text-slate-200'" x-text="s.name"></button>
                   </template>
                 </div>
 
@@ -1034,6 +1034,22 @@
 
                 <template x-if="opsSvc() && !opsSvc().error">
                   <div class="space-y-5" :class="ops.credentials?.ok ? '' : 'opacity-70'">
+                    <!-- Date range: every indicator below follows it -->
+                    <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+                      <div class="flex gap-1">
+                        <template x-for="r in opsPresets()" :key="r.label">
+                          <button @click="opsSetRange(r.range)" class="mono text-xs px-2.5 py-1 rounded-md border transition" :class="r.active ? 'border-indigo-400/60 bg-indigo-500/20 text-white' : 'border-slate-700/60 text-slate-400 hover:text-slate-200'" x-text="r.label"></button>
+                        </template>
+                      </div>
+                      <label class="flex items-center gap-1.5 text-[11px] text-slate-400">del
+                        <input type="date" :value="opsV().fromDay" :min="opsV().minDay" :max="opsV().toDay" @change="opsSetRange({ mode: 'days', from: $event.target.value, to: opsV().toDay })" class="mono text-xs bg-slate-900/60 border border-slate-700/60 rounded-md px-2 py-1 text-slate-200 [color-scheme:dark]">
+                      </label>
+                      <label class="flex items-center gap-1.5 text-[11px] text-slate-400">al
+                        <input type="date" :value="opsV().toDay" :min="opsV().fromDay" :max="opsV().maxDay" @change="opsSetRange({ mode: 'days', from: opsV().fromDay, to: $event.target.value })" class="mono text-xs bg-slate-900/60 border border-slate-700/60 rounded-md px-2 py-1 text-slate-200 [color-scheme:dark]">
+                      </label>
+                      <span class="mono text-[11px] text-slate-500 md:ml-auto" x-text="opsV().span"></span>
+                    </div>
+
                     <!-- KPIs -->
                     <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
                       <template x-for="k in opsKpis()" :key="k.label">
@@ -1058,7 +1074,7 @@
                         </div>
                       </div>
                       <div class="flex gap-1">
-                        <template x-for="d in opsSvc().days" :key="d.date">
+                        <template x-for="d in opsV().days" :key="d.date">
                           <button @click="opsDay = opsDay === d.date ? null : d.date" @mouseenter="opsDayHover = d.date" @mouseleave="opsDayHover = null"
                             class="flex-1 min-w-0 group" :aria-label="shortDate(d.date) + ': ' + opsLevel(d.level).label">
                             <div class="h-10 rounded-md grid place-items-center text-sm font-bold text-slate-950 transition ring-offset-2 ring-offset-[#0b1120]" :class="opsLevel(d.level).cell + (opsDay === d.date ? ' ring-2 ring-white' : ' group-hover:ring-2 group-hover:ring-slate-400')" x-text="opsLevel(d.level).glyph"></div>
@@ -1086,10 +1102,10 @@
                             </div>
                             <div class="relative h-24 md:h-28 border-b border-slate-700/60">
                               <div class="absolute inset-0" x-html="opsChart(c.id)"></div>
-                              <div x-show="opsHover !== null" class="absolute top-0 bottom-0 w-px bg-slate-200/70 pointer-events-none" :style="'left:' + opsLeft(opsHover + .5)"></div>
+                              <div x-show="opsHover !== null" class="absolute top-0 bottom-0 w-px bg-slate-200/70 pointer-events-none" :style="{ left: opsLeft((opsHover ?? 0) + .5) }"></div>
                               <template x-if="c.id === 'requests'">
                                 <div>
-                                  <template x-for="m in opsSvc().changes" :key="m.kind + m.at + m.ref">
+                                  <template x-for="m in opsV().changes" :key="m.kind + m.at + m.ref">
                                     <a :href="m.url" target="_blank" rel="noopener" class="absolute top-0 -translate-x-1/2 h-2.5 w-2.5 rounded-full border-2 border-slate-100" :class="m.kind === 'deploy' ? 'bg-slate-100' : 'bg-transparent'" :style="'left:' + opsLeft(opsPos(m.at))" :title="(m.kind === 'deploy' ? 'Despliegue ' : 'PR ') + m.ref + ' · ' + m.title + ' · ' + opsWhen(m.at)"></a>
                                   </template>
                                 </div>
@@ -1103,18 +1119,18 @@
                           </template>
                         </div>
                       </div>
-                      <div class="text-[11px] text-slate-500 mt-2" x-show="opsSvc().changes.length">○ PR fusionado · ● despliegue a producción</div>
+                      <div class="text-[11px] text-slate-500 mt-2" x-show="opsV().changes.length">○ PR fusionado · ● despliegue a producción</div>
                     </div>
 
                     <!-- Incidents -->
                     <div class="panel overflow-hidden">
                       <div class="flex items-center gap-2 px-4 py-3 border-b border-slate-800/70">
                         <h3 class="text-sm font-semibold text-white">Incidentes detectados</h3>
-                        <span class="mono text-[11px] text-slate-500" x-text="opsSvc().incidents.length + ' en ' + ops.snapshot.days + ' días'"></span>
+                        <span class="mono text-[11px] text-slate-500" x-text="opsV().incidents.length + ' en ' + opsV().label"></span>
                         <span class="ml-auto text-[11px] text-slate-500 hidden md:inline" x-text="'5xx ≥ ' + ops.thresholds.error_rate_warn + ' % · p95 ≥ ' + opsMs(ops.thresholds.latency_warn_ms) + ' · sin host sano'"></span>
                       </div>
-                      <div x-show="!opsSvc().incidents.length" class="p-8 text-sm text-slate-500 text-center">Ninguna hora superó los umbrales en este periodo.</div>
-                      <template x-for="i in opsSvc().incidents" :key="i.start">
+                      <div x-show="!opsV().incidents.length" class="p-8 text-sm text-slate-500 text-center">Ninguna hora superó los umbrales en este periodo.</div>
+                      <template x-for="i in opsV().incidents" :key="i.start">
                         <div class="px-4 py-3 border-b border-slate-800/50 last:border-0">
                           <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
                             <span class="mono text-[10px] px-1.5 py-0.5 rounded font-semibold" :class="opsLevel(i.level).badge" x-text="i.level === 'bad' ? '× GRAVE' : '! DEGRADADO'"></span>
@@ -1149,7 +1165,7 @@
                     <div>
                       <h3 class="text-sm font-semibold text-white mb-2">Dependencias</h3>
                       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <template x-for="d in opsSvc().dependencies" :key="d.kind + d.name">
+                        <template x-for="d in opsV().dependencies" :key="d.kind + d.name">
                           <div class="panel p-4">
                             <div class="flex items-center gap-2">
                               <span class="mono text-[10px] px-1.5 py-0.5 rounded bg-slate-700/50 text-slate-300" x-text="{ database: 'BASE DE DATOS', server: 'SERVIDOR', cache: 'CACHÉ' }[d.kind]"></span>
@@ -1201,12 +1217,12 @@
                       <div class="panel overflow-hidden">
                         <div class="px-4 py-3 border-b border-slate-800/70 flex flex-wrap items-center gap-x-3 gap-y-1">
                           <h3 class="text-sm font-semibold text-white">Cambios · <span class="mono font-normal" x-text="opsSvc().github.repo"></span></h3>
-                          <span class="mono text-[11px] text-slate-500" x-text="opsSvc().github.merged + ' PR fusionados · ' + opsSvc().github.deploys + ' despliegues'"></span>
+                          <span class="mono text-[11px] text-slate-500" x-text="opsV().merged + ' PR fusionados · ' + opsV().deploys + ' despliegues'"></span>
                           <button x-show="opsSvc().github.open" @click="opsOpenPrs = !opsOpenPrs" class="ml-auto mono text-[11px] px-2 py-1 rounded-md border border-slate-700/60 text-slate-300 hover:text-white" x-text="(opsOpenPrs ? 'Ver cambios aplicados' : (opsSvc().github.open || []).length + ' PR abiertos')"></button>
                         </div>
                         <div x-show="!opsOpenPrs">
-                          <div x-show="!opsSvc().changes.length" class="p-6 text-sm text-slate-500 text-center">Sin cambios leídos en este periodo.</div>
-                          <template x-for="c in opsSvc().changes.slice(0, opsAllChanges ? 200 : 12)" :key="c.kind + c.at + c.ref">
+                          <div x-show="!opsV().changes.length" class="p-6 text-sm text-slate-500 text-center">Sin cambios leídos en este periodo.</div>
+                          <template x-for="c in opsV().changes.slice(0, opsAllChanges ? 200 : 12)" :key="c.kind + c.at + c.ref">
                             <a :href="c.url" target="_blank" rel="noopener" class="flex items-baseline gap-3 px-4 py-2 border-b border-slate-800/50 last:border-0 hover:bg-slate-800/30">
                               <span class="mono text-[11px] text-slate-500 w-28 shrink-0" x-text="opsWhen(c.at)"></span>
                               <span class="mono text-[10px] px-1.5 py-0.5 rounded shrink-0" :class="c.kind === 'deploy' ? (c.result === 'failure' ? 'bg-rose-500/20 text-rose-200' : 'bg-slate-100 text-slate-900') : 'bg-slate-700/50 text-slate-300'" x-text="c.kind === 'deploy' ? (c.result === 'failure' ? 'deploy falló' : 'deploy') : c.ref"></span>
@@ -1214,7 +1230,7 @@
                               <span class="text-xs text-slate-500 ml-auto shrink-0 hidden sm:inline" x-text="c.author"></span>
                             </a>
                           </template>
-                          <button x-show="opsSvc().changes.length > 12 && !opsAllChanges" @click="opsAllChanges = true" class="w-full px-4 py-2 text-xs text-slate-400 hover:text-white">Ver los <span x-text="opsSvc().changes.length"></span></button>
+                          <button x-show="opsV().changes.length > 12 && !opsAllChanges" @click="opsAllChanges = true" class="w-full px-4 py-2 text-xs text-slate-400 hover:text-white">Ver los <span x-text="opsV().changes.length"></span></button>
                         </div>
                         <div x-show="opsOpenPrs">
                           <template x-for="p in (opsSvc().github.open || [])" :key="p.number">
@@ -1636,6 +1652,9 @@ const LINK_COLOR = { hosted_in: '#a3e635', discusses: '#bef264', builds: '#34d39
   invited: '#22d3ee', series: '#22d3ee', agenda: '#22d3ee', contact: '#64748b' };
 const trunc = (t, n) => (t && t.length > n ? t.slice(0, n - 1) + '…' : t);
 
+// Last computed date-range view of the Operación data (kept outside Alpine's reactive state).
+const OPS_VIEW = { key: null, value: null };
+
 function store(key, value) {
   try {
     if (value === undefined) return JSON.parse(localStorage.getItem(key) || 'null');
@@ -1693,7 +1712,7 @@ function workspace() {
     ],
     accountsData: null, tests: {}, addOpen: false,
     security: null, securityFilter: 'all', securityQuery: '', securityBusy: false, securityDev: false, securityRepo: '', newWatch: { product: '', custom: '', where: '' },
-    ops: null, opsBusy: false, opsService: 0, opsHover: null, opsDay: null, opsDayHover: null, opsOpenPrs: false, opsAllChanges: false,
+    ops: null, opsBusy: false, opsService: 0, opsRange: { mode: 'all' }, opsHover: null, opsDay: null, opsDayHover: null, opsOpenPrs: false, opsAllChanges: false,
     opsCharts: [
       { id: 'requests', title: 'Peticiones por hora', legend: [], fmt: n => new Intl.NumberFormat('es-MX').format(n) },
       { id: 'errors', title: 'Errores 5xx por hora', legend: [{ label: 'aplicación', color: '#6366f1' }, { label: 'balanceador', color: '#0891b2' }], fmt: n => new Intl.NumberFormat('es-MX').format(n) },
@@ -2391,6 +2410,78 @@ function workspace() {
       finally { this.opsBusy = false; this.loading.ops = false; }
     },
     opsSvc() { return (this.ops?.snapshot?.services || [])[this.opsService] || null; },
+    opsSetRange(range) { this.opsRange = range; this.opsHover = null; this.opsDay = null; this.opsDayHover = null; },
+    opsPresets() {
+      const r = this.opsRange, n = this.opsSvc().hours.length;
+      const last = (hours, label) => ({ label, range: { mode: 'last', hours }, active: r.mode === 'last' && r.hours === hours });
+      return [last(24, '24 h'), last(72, '3 días'), last(168, '7 días')].filter(x => x.range.hours < n)
+        .concat({ label: `Todo (${this.ops.snapshot.days} días)`, range: { mode: 'all' }, active: r.mode === 'all' });
+    },
+    // The service as seen through the chosen date range: every indicator is recomputed from
+    // the hourly rows of the stored reading, so changing the range never calls AWS.
+    opsV() {
+      const s = this.opsSvc();
+      if (!s || s.error) return null;
+      const r = this.opsRange, n = s.hours.length, T = this.ops.thresholds;
+      const key = [this.opsService, this.ops.snapshot.fetched_at, r.mode, r.hours, r.from, r.to].join('|');
+      if (OPS_VIEW.key === key) return OPS_VIEW.value;
+      const dayFmt = new Intl.DateTimeFormat('en-CA', { timeZone: TZ });
+      const dayOf = s.hours.map(h => dayFmt.format(new Date(h.t)));
+      let a = 0, b = n;
+      if (r.mode === 'last') a = Math.max(0, n - r.hours);
+      if (r.mode === 'days') {
+        a = dayOf.findIndex(d => d >= r.from);
+        b = dayOf.findLastIndex(d => d <= r.to) + 1;
+        if (a < 0 || b <= a) { a = 0; b = n; }
+      }
+      const full = a === 0 && b === n, H = s.hours.slice(a, b);
+      const t0 = new Date(H[0].t).getTime(), t1 = new Date(H[H.length - 1].t).getTime() + 36e5;
+      const sum = (rows, f) => rows.reduce((acc, h) => acc + f(h), 0);
+      const totals = rows => {
+        const requests = sum(rows, h => h.requests), app = sum(rows, h => h.app_5xx), lb = sum(rows, h => h.lb_5xx);
+        const weight = sum(rows, h => h.p95_ms == null ? 0 : h.requests);
+        return { requests, app_5xx: app, lb_5xx: lb, errors: app + lb, down_minutes: sum(rows, h => h.down_minutes),
+          availability: requests ? 100 * (1 - (app + lb) / requests) : null,
+          p95_ms: weight ? sum(rows, h => h.p95_ms == null ? 0 : h.p95_ms * h.requests) / weight : null };
+      };
+      const incidents = s.incidents.filter(i => new Date(i.start) < t1 && new Date(i.end) > t0);
+      const m = totals(H);
+      let summary;
+      if (full) summary = { ...s.summary, p95_exact: true };
+      else {
+        const before = a - H.length >= 0 ? totals(s.hours.slice(a - H.length, a)) : null;
+        summary = { ...m, uptime_hosts: 100 * (1 - m.down_minutes / (H.length * 60)), p95_exact: false,
+          incidents: incidents.length, bad_incidents: incidents.filter(i => i.level === 'bad').length,
+          previous: before && before.requests ? before : null };
+      }
+      const days = [];
+      H.forEach((h, i) => {
+        const date = dayOf[a + i];
+        let d = days[days.length - 1];
+        if (!d || d.date !== date) days.push(d = { date, requests: 0, errors: 0, down_minutes: 0, p95_peak_ms: null, flagged_hours: 0, bad_hours: 0 });
+        d.requests += h.requests; d.errors += h.app_5xx + h.lb_5xx; d.down_minutes += h.down_minutes;
+        if (h.p95_ms != null && h.requests >= 100) d.p95_peak_ms = Math.max(d.p95_peak_ms || 0, h.p95_ms);
+        d.flagged_hours += h.level !== 'ok'; d.bad_hours += h.level === 'bad';
+      });
+      days.forEach(d => {
+        d.error_rate = d.requests ? 100 * d.errors / d.requests : 0;
+        d.level = d.down_minutes >= 15 || d.error_rate >= T.error_rate_bad || d.bad_hours ? 'bad'
+          : d.down_minutes > 0 || d.error_rate >= T.error_rate_warn || d.flagged_hours ? 'warn' : 'ok';
+      });
+      const changes = s.changes.filter(c => { const t = new Date(c.at).getTime(); return t >= t0 && t < t1; });
+      const dependencies = s.dependencies.map(d => ({ ...d, metrics: d.metrics.map(x => {
+        const series = x.series.slice(a, b), present = series.filter(v => v != null);
+        return { ...x, series, latest: present.length ? present[present.length - 1] : null,
+          max: present.length ? Math.max(...present) : null, min: present.length ? Math.min(...present) : null };
+      }) }));
+      const lengthLabel = H.length % 24 === 0 ? `${H.length / 24} ${H.length === 24 ? 'día' : 'días'}` : H.length < 48 ? `${H.length} h` : `${(H.length / 24).toFixed(1)} días`;
+      const value = { hours: H, days, incidents, changes, dependencies, summary, full,
+        merged: changes.filter(c => c.kind === 'pr').length, deploys: changes.filter(c => c.kind === 'deploy').length,
+        fromDay: dayOf[a], toDay: dayOf[b - 1], minDay: dayOf[0], maxDay: dayOf[n - 1], label: lengthLabel,
+        span: `${this.opsWhen(H[0].t)} → ${this.opsWhen(H[H.length - 1].t)} · ${lengthLabel}` };
+      OPS_VIEW.key = key; OPS_VIEW.value = value;
+      return value;
+    },
     opsInt(n) { return new Intl.NumberFormat('es-MX').format(n ?? 0); },
     opsCompact(n) { return new Intl.NumberFormat('es-MX', { notation: 'compact', maximumFractionDigits: 1 }).format(n ?? 0); },
     opsMs(ms) { return ms == null ? '–' : ms < 1000 ? Math.round(ms) + ' ms' : (ms / 1000).toFixed(1) + ' s'; },
@@ -2419,44 +2510,45 @@ function workspace() {
       return { label: s.name + ' operando con normalidad', dot: 'bg-emerald-400' };
     },
     opsKpis() {
-      const m = this.opsSvc().summary, p = m.previous, days = this.ops.snapshot.days;
+      const m = this.opsV().summary, p = m.previous;
       const pct = v => v == null ? '–' : v.toFixed(2) + ' %';
       return [
         { label: 'Disponibilidad', value: pct(m.availability), hint: `${this.opsInt(m.errors)} errores 5xx de ${this.opsCompact(m.requests)}`,
-          prev: p ? `${days} días previos: ${pct(p.availability)}` : '', glow: 'bg-emerald-500', title: 'Peticiones que no terminaron en 5xx (aplicación + balanceador)' },
+          prev: p ? `periodo previo: ${pct(p.availability)}` : '', glow: 'bg-emerald-500', title: 'Peticiones que no terminaron en 5xx (aplicación + balanceador)' },
         { label: 'Uptime por host', value: pct(m.uptime_hosts), hint: `${m.down_minutes} min sin host sano`,
           prev: 'medido dentro de AWS', glow: 'bg-indigo-500', title: 'Intervalos de 5 min en los que el balanceador tenía al menos un destino sano' },
-        { label: 'Latencia p95', value: this.opsMs(m.p95_ms), hint: `${this.opsCompact(m.requests)} peticiones`,
-          prev: p ? `${days} días previos: ${this.opsMs(p.p95_ms)} · ${this.opsCompact(p.requests)}` : '', glow: 'bg-cyan-500', title: 'Tiempo de respuesta de la aplicación, percentil 95 de todo el periodo' },
+        { label: 'Latencia p95', value: (m.p95_exact ? '' : '≈ ') + this.opsMs(m.p95_ms), hint: `${this.opsCompact(m.requests)} peticiones`,
+          prev: p ? `periodo previo: ${m.p95_exact ? '' : '≈ '}${this.opsMs(p.p95_ms)} · ${this.opsCompact(p.requests)}` : '', glow: 'bg-cyan-500',
+          title: m.p95_exact ? 'Tiempo de respuesta de la aplicación, percentil 95 de todo el periodo' : 'Aproximado: promedio de los p95 de cada hora, ponderado por peticiones. El valor exacto solo existe para el periodo completo.' },
         { label: 'Incidentes', value: m.incidents, hint: `${m.bad_incidents} graves`,
           prev: `5xx: ${this.opsCompact(m.lb_5xx)} balanceador · ${this.opsCompact(m.app_5xx)} app`, glow: 'bg-rose-500', title: 'Grupos de horas que superaron los umbrales' },
       ];
     },
     opsDayLine() {
-      const s = this.opsSvc(), key = this.opsDayHover || this.opsDay, d = s.days.find(x => x.date === key);
+      const s = this.opsV(), key = this.opsDayHover || this.opsDay, d = s.days.find(x => x.date === key);
       if (!d) return 'Elige un día para ver su detalle.';
       return `${this.dayLabel(d.date)} · ${this.opsLevel(d.level).label} · ${this.opsInt(d.requests)} peticiones · ${this.opsInt(d.errors)} errores 5xx (${d.error_rate.toFixed(2)} %)`
         + ` · p95 pico ${this.opsMs(d.p95_peak_ms)} · ${d.down_minutes} min sin host sano · ${d.flagged_hours} h marcadas`;
     },
     opsHourLine() {
-      const h = this.opsHover === null ? null : this.opsSvc().hours[this.opsHover];
+      const h = this.opsHover === null ? null : this.opsV().hours[this.opsHover];
       if (!h) return 'Pasa el cursor (o toca) sobre las gráficas para ver cada hora.';
       return `${this.opsWhen(h.t)} · ${this.opsInt(h.requests)} peticiones · 5xx aplicación ${this.opsInt(h.app_5xx)} · balanceador ${this.opsInt(h.lb_5xx)}`
         + (h.lb_5xx ? ` (502: ${h.lb_502} · 503: ${h.lb_503} · 504: ${h.lb_504})` : '') + ` · ${h.error_rate.toFixed(2)} % · p95 ${this.opsMs(h.p95_ms)} · p99 ${this.opsMs(h.p99_ms)}`
         + (h.down_minutes ? ` · ${h.down_minutes} min sin host sano` : '') + (h.reasons.length ? ' · ' + this.opsLevel(h.level).label.toLowerCase() : '');
     },
     opsMove(event) {
-      const s = this.opsSvc(), rect = event.currentTarget.getBoundingClientRect();
+      const s = this.opsV(), rect = event.currentTarget.getBoundingClientRect();
       const x = (event.touches ? event.touches[0].clientX : event.clientX) - rect.left;
       this.opsHover = Math.max(0, Math.min(s.hours.length - 1, Math.floor(x / rect.width * s.hours.length)));
     },
-    opsPos(iso) { const H = this.opsSvc().hours; return (new Date(iso) - new Date(H[0].t)) / 36e5; },
-    opsLeft(pos) { return Math.max(0, Math.min(100, pos / this.opsSvc().hours.length * 100)) + '%'; },
+    opsPos(iso) { const H = this.opsV().hours; return (new Date(iso) - new Date(H[0].t)) / 36e5; },
+    opsLeft(pos) { return Math.max(0, Math.min(100, pos / this.opsV().hours.length * 100)) + '%'; },
     opsTicks() {
       // One label per local day, placed where that day starts.
       const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: TZ }), ticks = [];
       let last = null;
-      this.opsSvc().hours.forEach((h, i) => {
+      this.opsV().hours.forEach((h, i) => {
         const day = fmt.format(new Date(h.t));
         if (day !== last && last !== null) ticks.push({ left: this.opsLeft(i), label: String(Number(day.slice(8))) });
         last = day;
@@ -2464,15 +2556,16 @@ function workspace() {
       return ticks;
     },
     opsMax(kind) {
-      const H = this.opsSvc().hours;
+      const H = this.opsV().hours;
       const value = { requests: h => h.requests, errors: h => h.app_5xx + h.lb_5xx, latency: h => Math.max(h.p99_ms || 0, h.p95_ms || 0) }[kind];
       return Math.max(1, ...H.map(value));
     },
     opsChart(kind) {
-      const s = this.opsSvc(), H = s.hours, n = H.length, max = this.opsMax(kind);
+      const s = this.opsV(), H = s.hours, n = H.length, max = this.opsMax(kind);
       const C1 = '#6366f1', C2 = '#0891b2';
       const y = v => (100 - (v / max) * 96).toFixed(2);
-      const bands = s.incidents.map(i => `<rect x="${Math.round(this.opsPos(i.start))}" y="0" width="${i.hours}" height="100" fill="${i.level === 'bad' ? 'rgb(244 63 94 / .16)' : 'rgb(251 191 36 / .11)'}"/>`).join('');
+      const bands = s.incidents.map(i => { const x = Math.round(this.opsPos(i.start)); return { i, x0: Math.max(0, x), x1: Math.min(n, x + i.hours) }; })
+        .map(({ i, x0, x1 }) => `<rect x="${x0}" y="0" width="${x1 - x0}" height="100" fill="${i.level === 'bad' ? 'rgb(244 63 94 / .16)' : 'rgb(251 191 36 / .11)'}"/>`).join('');
       const grid = `<line x1="0" x2="${n}" y1="52" y2="52" stroke="rgb(148 163 184 / .14)" vector-effect="non-scaling-stroke"/>`;
       const path = key => { let d = '', pen = false; H.forEach((h, i) => { if (h[key] == null) { pen = false; return; } d += `${pen ? 'L' : 'M'}${i + .5} ${y(h[key])}`; pen = true; }); return d; };
       const line = (key, color) => `<path d="${path(key)}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
